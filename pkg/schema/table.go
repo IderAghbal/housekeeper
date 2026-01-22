@@ -301,10 +301,24 @@ func compareTables(current, target *parser.SQL) ([]*TableDiff, error) {
 	// Pre-allocate diffs slice with estimated capacity
 	diffs := make([]*TableDiff, 0, len(currentTables)+len(targetTables))
 
+	// Pre-identify tables that will be handled via propagation to avoid duplicate diffs.
+	// When a source table has column changes, its AS dependents should be handled via propagation
+	// (which uses DROP+CREATE for view-like engines like Distributed). We skip these tables in
+	// the main loop to prevent generating both an ALTER and a DROP+CREATE for the same table.
+	// This must be done before the main loop because dependent tables may be processed
+	// before their source tables in alphabetical order.
+	propagatedTables := identifyPropagatedTables(currentTables, targetTables)
+
 	// Find tables to create or modify (exist in target but not in current) - sorted for deterministic order
 	for _, tableName := range SortedKeys(targetTables) {
 		targetTable := targetTables[tableName]
 		currentTable, exists := currentTables[tableName]
+
+		// Skip tables that will be handled via propagation from a source table
+		if propagatedTables[tableName] {
+			continue
+		}
+
 		diff, err := createTableDiff(tableName, currentTable, targetTable, currentTables, targetTables, exists)
 		if err != nil {
 			return nil, err
@@ -346,6 +360,51 @@ func compareTables(current, target *parser.SQL) ([]*TableDiff, error) {
 	}
 
 	return diffs, nil
+}
+
+// identifyPropagatedTables pre-identifies tables that should be handled via propagation
+// rather than the main comparison loop. This is necessary because dependent tables may be
+// processed before their source tables in alphabetical order.
+//
+// A table should be handled via propagation if:
+// 1. It uses AS to reference another table (is an AS dependent)
+// 2. The source table has column changes (will generate an ALTER with column changes)
+// 3. Both the source and dependent exist in current and target
+func identifyPropagatedTables(currentTables, targetTables map[string]*TableInfo) map[string]bool {
+	propagatedTables := make(map[string]bool)
+
+	for tableName, targetTable := range targetTables {
+		// Skip tables without AS dependents
+		if targetTable.AsDependents == nil || len(targetTable.AsDependents) == 0 {
+			continue
+		}
+
+		// Check if this table exists in current (required for column comparison)
+		currentTable, existsInCurrent := currentTables[tableName]
+		if !existsInCurrent {
+			continue
+		}
+
+		// Check if this table has column changes
+		// Conditionally flatten based on whether current has Nested columns
+		comparisonTargetTable := MaybeFlattenNestedColumns(currentTable, targetTable)
+		columnChanges := compareColumns(currentTable.Columns, comparisonTargetTable.Columns)
+		if len(columnChanges) == 0 {
+			continue
+		}
+
+		// This table has column changes - mark all its AS dependents for propagation
+		for dependentName := range targetTable.AsDependents {
+			// Only mark if the dependent exists in both current and target
+			if _, existsInTarget := targetTables[dependentName]; existsInTarget {
+				if _, existsInCurrent := currentTables[dependentName]; existsInCurrent {
+					propagatedTables[dependentName] = true
+				}
+			}
+		}
+	}
+
+	return propagatedTables
 }
 
 // propagateColumnChangesToDependents creates ALTER or DROP+CREATE diffs for tables
