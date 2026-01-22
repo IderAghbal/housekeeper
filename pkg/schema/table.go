@@ -372,10 +372,11 @@ func propagateColumnChangesToDependents(
 		// Generate SQL based on engine type
 		if isViewLikeEngine(targetDep.Engine) {
 			// For Distributed, Memory, etc.: DROP + CREATE is safe and necessary
+			// Note: generateDropTableSQL already includes semicolon from SQLBuilder
 			propDiff.UpSQL = fmt.Sprintf("-- Recreate to match schema changes from %s\n", sourceDiff.Name) +
-				generateDropTableSQL(currentDep) + ";\n" +
+				generateDropTableSQL(currentDep) + "\n" +
 				generateCreateTableSQL(targetDep)
-			propDiff.DownSQL = generateDropTableSQL(targetDep) + ";\n" +
+			propDiff.DownSQL = generateDropTableSQL(targetDep) + "\n" +
 				generateCreateTableSQL(currentDep)
 		} else {
 			// For MergeTree, etc.: Use ALTER to preserve data
