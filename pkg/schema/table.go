@@ -245,23 +245,37 @@ func (c ColumnInfo) Equal(other ColumnInfo) bool {
 		equalAST(c.TTL, other.TTL)
 }
 
-// enginesEqual compares two table engines with special handling for ReplicatedMergeTree.
-// When the target engine is ReplicatedMergeTree with no parameters, parameters are ignored
-// in the comparison. This handles the case where ClickHouse auto-expands ReplicatedMergeTree()
-// to ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}') internally.
+// enginesEqual compares two table engines with special handling for parameter normalization.
+// This handles cases where:
+// 1. ReplicatedMergeTree() is auto-expanded by ClickHouse to include paths
+// 2. Kafka vs Kafka() are semantically equivalent (empty params vs no params)
 func enginesEqual(target, current *parser.TableEngine) bool {
 	// Use standard equalAST for nil checks
 	if target == nil || current == nil {
 		return equalAST(target, current)
 	}
 
-	// Special handling for ReplicatedMergeTree when target has no parameters
-	if target.Name == "ReplicatedMergeTree" && len(target.Parameters) == 0 {
-		// If target has no parameters, only compare engine names (ignore current parameters)
-		return current.Name == "ReplicatedMergeTree"
+	// Engine names must match
+	if target.Name != current.Name {
+		return false
 	}
 
-	// For all other cases (including ReplicatedMergeTree with explicit parameters), use standard AST comparison
+	// Special handling for ReplicatedMergeTree when target has no parameters
+	// ClickHouse auto-expands ReplicatedMergeTree() to include paths like
+	// ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')
+	if target.Name == "ReplicatedMergeTree" && len(target.Parameters) == 0 {
+		return true // Names match and target has no params, consider equal
+	}
+
+	// For engines where empty params are equivalent to no params (Kafka, etc.)
+	// Treat nil and empty slice as equivalent
+	targetEmpty := len(target.Parameters) == 0
+	currentEmpty := len(current.Parameters) == 0
+	if targetEmpty && currentEmpty {
+		return true
+	}
+
+	// For all other cases, use standard AST comparison
 	return equalAST(target, current)
 }
 
@@ -637,9 +651,9 @@ func findRenamedTable(targetTable *TableInfo, currentTables, targetTables map[st
 		}
 
 		// Compare table properties (excluding name and database)
-		// Use flattened target table for comparison
-		flattenedTargetTable := FlattenNestedColumns(targetTable)
-		if tablesEqualIgnoringName(currentTable, flattenedTargetTable) {
+		// Conditionally flatten target table based on whether current has Nested columns
+		comparisonTargetTable := MaybeFlattenNestedColumns(currentTable, targetTable)
+		if tablesEqualIgnoringName(currentTable, comparisonTargetTable) {
 			return currentName
 		}
 	}
@@ -1027,10 +1041,10 @@ func handleTableNotExists(tableName string, targetTable *TableInfo, currentTable
 // Otherwise, column-level differences are computed and an ALTER operation is generated.
 func handleTableExists(tableName string, currentTable, targetTable *TableInfo) (*TableDiff, error) {
 	// Table exists in both - check for changes
-	// For comparison purposes, flatten the target table to match ClickHouse's internal representation
-	// Current table is already flattened by ClickHouse, but target table may have Nested syntax
-	flattenedTargetTable := FlattenNestedColumns(targetTable)
-	if tablesEqual(currentTable, flattenedTargetTable) {
+	// Conditionally flatten target table based on whether ClickHouse has flatten_nested=0
+	// If current table has Nested columns, keep target as-is; otherwise flatten to match
+	comparisonTargetTable := MaybeFlattenNestedColumns(currentTable, targetTable)
+	if tablesEqual(currentTable, comparisonTargetTable) {
 		return nil, nil
 	}
 
@@ -1040,8 +1054,8 @@ func handleTableExists(tableName string, currentTable, targetTable *TableInfo) (
 	}
 
 	// Generate column diffs for regular tables
-	// Use flattened target table for comparison but preserve original for SQL generation
-	columnChanges := compareColumns(currentTable.Columns, flattenedTargetTable.Columns)
+	// Use comparison target table (may be flattened or not depending on ClickHouse setting)
+	columnChanges := compareColumns(currentTable.Columns, comparisonTargetTable.Columns)
 
 	return createAlterDiff(tableName, currentTable, targetTable, columnChanges), nil
 }
