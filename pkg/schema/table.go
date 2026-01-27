@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/pseudomuto/housekeeper/pkg/compare"
@@ -91,6 +92,8 @@ const (
 	ColumnDiffDrop ColumnDiffType = "DROP"
 	// ColumnDiffModify indicates a column needs to be modified
 	ColumnDiffModify ColumnDiffType = "MODIFY"
+	// ColumnDiffRename indicates a column needs to be renamed
+	ColumnDiffRename ColumnDiffType = "RENAME"
 )
 
 // GetName implements SchemaObject interface.
@@ -743,12 +746,17 @@ func compareColumns(current, target []ColumnInfo) []ColumnDiff {
 	// Create maps for easier lookup
 	currentCols := make(map[string]ColumnInfo)
 	targetCols := make(map[string]ColumnInfo)
+	// Also create position maps for rename detection
+	currentPositions := make(map[string]int)
+	targetPositions := make(map[string]int)
 
-	for _, col := range current {
+	for i, col := range current {
 		currentCols[col.Name] = col
+		currentPositions[col.Name] = i
 	}
-	for _, col := range target {
+	for i, col := range target {
 		targetCols[col.Name] = col
+		targetPositions[col.Name] = i
 	}
 
 	// Find columns to add or modify
@@ -756,16 +764,37 @@ func compareColumns(current, target []ColumnInfo) []ColumnDiff {
 		if currentCol, exists := currentCols[targetCol.Name]; exists {
 			// Column exists - check for changes using Equal() method
 			if !currentCol.Equal(targetCol) {
-				// Fix: Create copies to avoid loop variable pointer issues
-				currentColCopy := currentCol
-				targetColCopy := targetCol
-				diffs = append(diffs, ColumnDiff{
-					Type:        ColumnDiffModify,
-					ColumnName:  targetCol.Name,
-					Current:     &currentColCopy,
-					Target:      &targetColCopy,
-					Description: "Modify column " + targetCol.Name,
-				})
+				// Check if this is an incompatible AggregateFunction type change
+				// ClickHouse doesn't support MODIFY for AggregateFunction type changes
+				// We need to use DROP + ADD instead
+				if isIncompatibleAggregateFunctionChange(currentCol.DataType, targetCol.DataType) {
+					// Convert to DROP + ADD instead of MODIFY
+					currentColCopy := currentCol
+					targetColCopy := targetCol
+					diffs = append(diffs, ColumnDiff{
+						Type:        ColumnDiffDrop,
+						ColumnName:  currentCol.Name,
+						Current:     &currentColCopy,
+						Description: "Drop column " + currentCol.Name + " (incompatible AggregateFunction change)",
+					})
+					diffs = append(diffs, ColumnDiff{
+						Type:        ColumnDiffAdd,
+						ColumnName:  targetCol.Name,
+						Target:      &targetColCopy,
+						Description: "Add column " + targetCol.Name + " (replacing incompatible AggregateFunction)",
+					})
+				} else {
+					// Fix: Create copies to avoid loop variable pointer issues
+					currentColCopy := currentCol
+					targetColCopy := targetCol
+					diffs = append(diffs, ColumnDiff{
+						Type:        ColumnDiffModify,
+						ColumnName:  targetCol.Name,
+						Current:     &currentColCopy,
+						Target:      &targetColCopy,
+						Description: "Modify column " + targetCol.Name,
+					})
+				}
 			}
 		} else {
 			// Column needs to be added
@@ -794,7 +823,315 @@ func compareColumns(current, target []ColumnInfo) []ColumnDiff {
 		}
 	}
 
+	// Detect renames: match DROP and ADD columns with matching types
+	// Use position as primary match, but use name similarity as tiebreaker
+	type posDiff struct {
+		diff *ColumnDiff
+		idx  int
+		pos  int
+	}
+	dropDiffs := make([]posDiff, 0)
+	addDiffs := make([]posDiff, 0)
+
+	// Collect DROP and ADD diffs with their positions
+	for i := range diffs {
+		diff := &diffs[i]
+		if diff.Type == ColumnDiffDrop {
+			if pos, exists := currentPositions[diff.ColumnName]; exists {
+				dropDiffs = append(dropDiffs, posDiff{diff: diff, idx: i, pos: pos})
+			}
+		} else if diff.Type == ColumnDiffAdd {
+			if pos, exists := targetPositions[diff.ColumnName]; exists {
+				addDiffs = append(addDiffs, posDiff{diff: diff, idx: i, pos: pos})
+			}
+		}
+	}
+
+	// Match DROP and ADD columns
+	// Strategy: For each DROP, find the best matching ADD using:
+	// 1. Same position (if available)
+	// 2. Matching type
+	// 3. Name similarity as tiebreaker
+	//
+	// To avoid greedy algorithm issues, we first score all potential matches,
+	// then sort DROP columns by match quality (best matches first) to ensure
+	// unambiguous renames are matched before ambiguous ones
+	type matchCandidate struct {
+		dropIdx     int
+		addIdx      int
+		score       float64
+		similarity  float64
+		posMatch    bool
+	}
+
+	var candidates []matchCandidate
+	for i, dropPosDiff := range dropDiffs {
+		dropCol := dropPosDiff.diff.Current
+
+		for j, addPosDiff := range addDiffs {
+			addCol := addPosDiff.diff.Target
+
+			// Check if types match (ignoring name)
+			typeMatch := columnsEqualIgnoringName(*dropCol, *addCol)
+			if !typeMatch {
+				continue
+			}
+
+			posMatch := dropPosDiff.pos == addPosDiff.pos
+			similarity := nameSimilarity(dropPosDiff.diff.ColumnName, addPosDiff.diff.ColumnName)
+
+			// Require reasonable name similarity
+			minSimilarity := 0.53
+			if posMatch {
+				minSimilarity = 0.4
+			}
+
+			if similarity < minSimilarity {
+				continue
+			}
+
+			// Score: similarity is primary, position match is bonus
+			score := similarity * 100.0
+			if posMatch {
+				score += 3.0
+			}
+
+			candidates = append(candidates, matchCandidate{
+				dropIdx:    i,
+				addIdx:     j,
+				score:      score,
+				similarity: similarity,
+				posMatch:   posMatch,
+			})
+		}
+	}
+
+	// Sort candidates by score (best first) to match unambiguous pairs first
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		// Tiebreaker: prefer position matches
+		if candidates[i].posMatch != candidates[j].posMatch {
+			return candidates[i].posMatch
+		}
+		return candidates[i].similarity > candidates[j].similarity
+	})
+
+	var renameDiffs []ColumnDiff
+	indicesToRemove := make(map[int]bool)
+	matchedAdds := make(map[int]bool) // Track which ADD diffs have been matched
+	matchedDrops := make(map[int]bool) // Track which DROP diffs have been matched
+
+	// Process candidates in order (best matches first)
+	for _, candidate := range candidates {
+		if matchedDrops[candidate.dropIdx] || matchedAdds[candidate.addIdx] {
+			continue // Already matched
+		}
+
+		dropPosDiff := dropDiffs[candidate.dropIdx]
+		addPosDiff := addDiffs[candidate.addIdx]
+
+		// Verify the match has sufficient name similarity
+		finalSimilarity := nameSimilarity(dropPosDiff.diff.ColumnName, addPosDiff.diff.ColumnName)
+		requiredSimilarity := 0.53
+		if candidate.posMatch {
+			requiredSimilarity = 0.4
+		}
+
+		if finalSimilarity >= requiredSimilarity {
+			currentCopy := *dropPosDiff.diff.Current
+			targetCopy := *addPosDiff.diff.Target
+			renameDiffs = append(renameDiffs, ColumnDiff{
+				Type:        ColumnDiffRename,
+				ColumnName:  dropPosDiff.diff.ColumnName, // old name
+				Current:     &currentCopy,
+				Target:      &targetCopy,
+				Description: fmt.Sprintf("Rename column %s to %s", dropPosDiff.diff.ColumnName, addPosDiff.diff.ColumnName),
+			})
+
+			// Mark original diffs for removal
+			indicesToRemove[dropPosDiff.idx] = true
+			indicesToRemove[addPosDiff.idx] = true
+			matchedAdds[candidate.addIdx] = true
+			matchedDrops[candidate.dropIdx] = true
+		}
+	}
+
+	// Remove matched ADD/DROP diffs and add RENAME diffs
+	if len(indicesToRemove) > 0 {
+		// Build sorted list of indices to remove (descending order)
+		sortedIndices := make([]int, 0, len(indicesToRemove))
+		for idx := range indicesToRemove {
+			sortedIndices = append(sortedIndices, idx)
+		}
+		sort.Sort(sort.Reverse(sort.IntSlice(sortedIndices)))
+
+		// Remove indices from highest to lowest to avoid index shifting issues
+		for _, idx := range sortedIndices {
+			diffs = append(diffs[:idx], diffs[idx+1:]...)
+		}
+
+		// Add RENAME diffs
+		diffs = append(diffs, renameDiffs...)
+	}
+
 	return diffs
+}
+
+// columnsEqualIgnoringName compares two columns for equality, ignoring the name
+// For rename detection, we only care about the DataType matching - other attributes
+// like Default, Codec, TTL, Comment, DefaultType might differ but shouldn't prevent renames
+func columnsEqualIgnoringName(a, b ColumnInfo) bool {
+	// Only compare DataType - ignore name, Default, Codec, TTL, Comment, DefaultType
+	// This ensures that columns with the same type but different metadata can still be renamed
+	return equalAST(a.DataType, b.DataType)
+}
+
+// nameSimilarity calculates a simple similarity score between two column names
+// Returns a value between 0.0 and 1.0, where 1.0 is identical
+// Uses word-based matching and longest common subsequence
+func nameSimilarity(name1, name2 string) float64 {
+	if name1 == name2 {
+		return 1.0
+	}
+	if len(name1) == 0 || len(name2) == 0 {
+		return 0.0
+	}
+
+	// Split names by underscores to get words
+	words1 := strings.Split(name1, "_")
+	words2 := strings.Split(name2, "_")
+
+	// Calculate word overlap (more important for column names)
+	wordOverlap := 0.0
+	matchedWords := 0
+	totalWords := len(words1)
+	if len(words2) > totalWords {
+		totalWords = len(words2)
+	}
+
+	// Count matching words (order-independent)
+	words2Map := make(map[string]int)
+	for _, w := range words2 {
+		words2Map[w]++
+	}
+
+	for _, w1 := range words1 {
+		if count, exists := words2Map[w1]; exists && count > 0 {
+			matchedWords++
+			words2Map[w1]--
+		}
+	}
+
+	if totalWords > 0 {
+		wordOverlap = float64(matchedWords) / float64(totalWords)
+	}
+
+	// Also calculate LCS for partial matches
+	lcsLen := longestCommonSubsequence(name1, name2)
+	maxLen := len(name1)
+	if len(name2) > maxLen {
+		maxLen = len(name2)
+	}
+	lcsRatio := float64(lcsLen) / float64(maxLen)
+
+	// Weight word overlap much more heavily (80%) since column names are word-based
+	// LCS helps with partial word matches (20%)
+	return 0.8*wordOverlap + 0.2*lcsRatio
+}
+
+// longestCommonSubsequence calculates the length of the longest common subsequence
+func longestCommonSubsequence(s1, s2 string) int {
+	m, n := len(s1), len(s2)
+	dp := make([][]int, m+1)
+	for i := range dp {
+		dp[i] = make([]int, n+1)
+	}
+
+	for i := 1; i <= m; i++ {
+		for j := 1; j <= n; j++ {
+			if s1[i-1] == s2[j-1] {
+				dp[i][j] = dp[i-1][j-1] + 1
+			} else {
+				if dp[i-1][j] > dp[i][j-1] {
+					dp[i][j] = dp[i-1][j]
+				} else {
+					dp[i][j] = dp[i][j-1]
+				}
+			}
+		}
+	}
+	return dp[m][n]
+}
+
+// isIncompatibleAggregateFunctionChange checks if changing from currentType to targetType
+// involves an incompatible AggregateFunction type change that ClickHouse doesn't support via MODIFY.
+// ClickHouse cannot MODIFY AggregateFunction columns when the aggregate function itself changes
+// (e.g., from groupUniqArrayArray to argMaxIf). Such changes require DROP + ADD instead.
+func isIncompatibleAggregateFunctionChange(currentType, targetType *parser.DataType) bool {
+	if currentType == nil || targetType == nil {
+		return false
+	}
+
+	currentStr := currentType.String()
+	targetStr := targetType.String()
+
+	// Check if both are AggregateFunction or SimpleAggregateFunction types
+	isCurrentAggregate := strings.Contains(currentStr, "AggregateFunction") || strings.Contains(currentStr, "SimpleAggregateFunction")
+	isTargetAggregate := strings.Contains(targetStr, "AggregateFunction") || strings.Contains(targetStr, "SimpleAggregateFunction")
+
+	if !isCurrentAggregate || !isTargetAggregate {
+		return false // Not both aggregate functions, MODIFY should work
+	}
+
+	// Extract the aggregate function name (first parameter)
+	// AggregateFunction(funcName, ...) or SimpleAggregateFunction(funcName, ...)
+	currentFunc := extractAggregateFunctionName(currentStr)
+	targetFunc := extractAggregateFunctionName(targetStr)
+
+	// If the function names are different, it's an incompatible change
+	if currentFunc != "" && targetFunc != "" && currentFunc != targetFunc {
+		return true
+	}
+
+	// Also check if switching between AggregateFunction and SimpleAggregateFunction
+	if strings.HasPrefix(currentStr, "AggregateFunction") && strings.HasPrefix(targetStr, "SimpleAggregateFunction") {
+		return true
+	}
+	if strings.HasPrefix(currentStr, "SimpleAggregateFunction") && strings.HasPrefix(targetStr, "AggregateFunction") {
+		return true
+	}
+
+	return false
+}
+
+// extractAggregateFunctionName extracts the aggregate function name from a type string
+// e.g., "AggregateFunction(groupUniqArrayArray, Array(String))" -> "groupUniqArrayArray"
+// e.g., "SimpleAggregateFunction(max, Nullable(Decimal(18, 2)))" -> "max"
+func extractAggregateFunctionName(typeStr string) string {
+	// Find the opening parenthesis after AggregateFunction or SimpleAggregateFunction
+	openParen := strings.Index(typeStr, "(")
+	if openParen == -1 {
+		return ""
+	}
+
+	// Extract the function name (first parameter before the first comma or closing paren)
+	funcPart := typeStr[openParen+1:]
+	// Find the first comma or closing paren
+	commaIdx := strings.Index(funcPart, ",")
+	closeParenIdx := strings.Index(funcPart, ")")
+
+	endIdx := len(funcPart)
+	if commaIdx != -1 && commaIdx < endIdx {
+		endIdx = commaIdx
+	}
+	if closeParenIdx != -1 && closeParenIdx < endIdx {
+		endIdx = closeParenIdx
+	}
+
+	funcName := strings.TrimSpace(funcPart[:endIdx])
+	return funcName
 }
 
 // reverseColumnChanges reverses column changes for down migration
@@ -830,6 +1167,17 @@ func reverseColumnChanges(changes []ColumnDiff) []ColumnDiff {
 				Current:     &currentCopy,
 				Target:      &targetCopy,
 				Description: "Modify column " + change.ColumnName,
+			})
+		case ColumnDiffRename:
+			// Reverse rename: new -> old becomes old -> new
+			currentCopy := *change.Target
+			targetCopy := *change.Current
+			reversed = append(reversed, ColumnDiff{
+				Type:        ColumnDiffRename,
+				ColumnName:  change.Target.Name, // new name becomes old
+				Current:     &currentCopy,
+				Target:      &targetCopy,
+				Description: fmt.Sprintf("Rename column %s to %s", change.Target.Name, change.ColumnName),
 			})
 		}
 	}
@@ -1046,6 +1394,12 @@ func generateAlterTableSQL(current, target *TableInfo, columnChanges []ColumnDif
 		case ColumnDiffModify:
 			sql.WriteString("MODIFY COLUMN ")
 			sql.WriteString(formatColumnDefinition(*change.Target))
+		case ColumnDiffRename:
+			sql.WriteString("RENAME COLUMN `")
+			sql.WriteString(change.ColumnName) // old name
+			sql.WriteString("` TO `")
+			sql.WriteString(change.Target.Name) // new name
+			sql.WriteString("`")
 		}
 	}
 
