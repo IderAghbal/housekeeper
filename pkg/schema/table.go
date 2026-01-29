@@ -849,19 +849,17 @@ func compareColumns(current, target []ColumnInfo) []ColumnDiff {
 
 	// Match DROP and ADD columns
 	// Strategy: For each DROP, find the best matching ADD using:
-	// 1. Same position (if available)
-	// 2. Matching type
-	// 3. Name similarity as tiebreaker
+	// 1. Same position + same type → always treat as rename (no name similarity required)
+	// 2. Otherwise: matching type + name similarity >= 0.53
 	//
-	// To avoid greedy algorithm issues, we first score all potential matches,
-	// then sort DROP columns by match quality (best matches first) to ensure
-	// unambiguous renames are matched before ambiguous ones
+	// Position+type match takes precedence so that e.g. min_event_received_at -> session_start_time
+	// at the same ordinal is detected as a rename even when names are lexically unrelated.
 	type matchCandidate struct {
-		dropIdx     int
-		addIdx      int
-		score       float64
-		similarity  float64
-		posMatch    bool
+		dropIdx    int
+		addIdx     int
+		score      float64
+		similarity float64
+		posMatch   bool
 	}
 
 	var candidates []matchCandidate
@@ -880,20 +878,17 @@ func compareColumns(current, target []ColumnInfo) []ColumnDiff {
 			posMatch := dropPosDiff.pos == addPosDiff.pos
 			similarity := nameSimilarity(dropPosDiff.diff.ColumnName, addPosDiff.diff.ColumnName)
 
-			// Require reasonable name similarity
-			minSimilarity := 0.53
+			// Same position + same type → treat as rename regardless of name similarity
 			if posMatch {
-				minSimilarity = 0.4
-			}
-
-			if similarity < minSimilarity {
+				// No name similarity required
+			} else if similarity < 0.53 {
 				continue
 			}
 
-			// Score: similarity is primary, position match is bonus
+			// Score: position+type match first (highest), then by name similarity
 			score := similarity * 100.0
 			if posMatch {
-				score += 3.0
+				score = 1000.0 + similarity
 			}
 
 			candidates = append(candidates, matchCandidate{
@@ -920,7 +915,7 @@ func compareColumns(current, target []ColumnInfo) []ColumnDiff {
 
 	var renameDiffs []ColumnDiff
 	indicesToRemove := make(map[int]bool)
-	matchedAdds := make(map[int]bool) // Track which ADD diffs have been matched
+	matchedAdds := make(map[int]bool)  // Track which ADD diffs have been matched
 	matchedDrops := make(map[int]bool) // Track which DROP diffs have been matched
 
 	// Process candidates in order (best matches first)
@@ -932,14 +927,14 @@ func compareColumns(current, target []ColumnInfo) []ColumnDiff {
 		dropPosDiff := dropDiffs[candidate.dropIdx]
 		addPosDiff := addDiffs[candidate.addIdx]
 
-		// Verify the match has sufficient name similarity
-		finalSimilarity := nameSimilarity(dropPosDiff.diff.ColumnName, addPosDiff.diff.ColumnName)
-		requiredSimilarity := 0.53
-		if candidate.posMatch {
-			requiredSimilarity = 0.4
+		// Position+type match: accept as rename without name similarity. Otherwise require similarity >= 0.53.
+		accept := candidate.posMatch
+		if !accept {
+			finalSimilarity := nameSimilarity(dropPosDiff.diff.ColumnName, addPosDiff.diff.ColumnName)
+			accept = finalSimilarity >= 0.53
 		}
 
-		if finalSimilarity >= requiredSimilarity {
+		if accept {
 			currentCopy := *dropPosDiff.diff.Current
 			targetCopy := *addPosDiff.diff.Target
 			renameDiffs = append(renameDiffs, ColumnDiff{
