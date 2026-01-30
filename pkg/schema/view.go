@@ -718,10 +718,28 @@ func selectStatementsAreEqualNormalized(stmt1, stmt2 *parser.SelectStatement) bo
 		}
 	}
 
-	// If we get here, the basic structure is similar
-	// For ClickHouse formatting tolerance, we'll be optimistic and assume they're equivalent
-	// This is a temporary measure to address the recreation issue
-	// TODO: Implement proper normalization comparison once format package has public methods
+	// Compare actual content so that MV/schema file changes are detected.
+	// Previously we only checked structure and returned true, so changes to
+	// columns, WHERE, GROUP BY, HAVING, FROM, or ORDER BY were missed.
+	if !selectColumnsAreEqual(stmt1.Columns, stmt2.Columns) {
+		return false
+	}
+	if !whereClausesAreEqual(stmt1.Where, stmt2.Where) {
+		return false
+	}
+	if !groupByClausesAreEqual(stmt1.GroupBy, stmt2.GroupBy) {
+		return false
+	}
+	if !havingClausesAreEqual(stmt1.Having, stmt2.Having) {
+		return false
+	}
+	if !fromClausesAreEqual(stmt1.From, stmt2.From) {
+		return false
+	}
+	if !selectOrderByClausesAreEqual(stmt1.OrderBy, stmt2.OrderBy) {
+		return false
+	}
+
 	return true
 }
 

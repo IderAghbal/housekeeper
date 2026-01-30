@@ -108,6 +108,9 @@ func normalizedExpressionsEqual(expr1, expr2 *parser.Expression) bool {
 func normalizeExpressionString(expr string) string {
 	result := expr
 
+	// Normalize identifier quoting: strip backticks so dump (e.g. `r`.`ws_path`) matches schema (r.ws_path)
+	result = strings.ReplaceAll(result, "`", "")
+
 	// Normalize INTERVAL to toInterval function format
 	intervalUnits := map[string]string{
 		"SECOND":  "Second",
@@ -131,12 +134,106 @@ func normalizeExpressionString(expr string) string {
 	result = regexp.MustCompile(`\s+`).ReplaceAllString(result, " ")
 	result = strings.TrimSpace(result)
 
+	// Normalize IN (single_identifier) to IN identifier (ClickHouse wraps CTE refs in parens)
+	result = regexp.MustCompile(`\s+NOT\s+IN\s+\(\s*([a-zA-Z0-9_]+)\s*\)`).ReplaceAllString(result, " NOT IN $1")
+	result = regexp.MustCompile(`\s+IN\s+\(\s*([a-zA-Z0-9_]+)\s*\)`).ReplaceAllString(result, " IN $1")
+
+	// Strip outer balanced parentheses so "(expr)" and "expr" normalize the same
+	result = removeOuterBalancedParens(result)
+
 	// Remove redundant parentheses around simple expressions
 	// Pattern: match expressions like "(now() - toIntervalDay(1))" and keep the inner part
 	// But be careful not to remove parentheses that are part of function calls or tuples
 	result = removeRedundantParens(result)
 
+	// Strip outer parens from each top-level AND/OR segment so "((id, name) NOT IN pending)" -> "(id, name) NOT IN pending"
+	result = stripOuterParensPerSegment(result)
+
 	return result
+}
+
+// stripOuterParensPerSegment splits on top-level " AND " / " OR ", strips outer balanced parens from each segment, rejoins.
+func stripOuterParensPerSegment(s string) string {
+	segments, delims := splitTopLevelAndOr(s)
+	var b strings.Builder
+	for i, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		for {
+			next := removeOuterBalancedParens(seg)
+			if next == seg {
+				break
+			}
+			seg = next
+		}
+		if i > 0 {
+			b.WriteString(delims[i-1])
+		}
+		b.WriteString(seg)
+	}
+	return b.String()
+}
+
+// splitTopLevelAndOr splits s by " AND " and " OR " at paren depth 0. Returns segments and delimiters (len(delims) = len(segments)-1).
+func splitTopLevelAndOr(s string) (segments []string, delims []string) {
+	start := 0
+	depth := 0
+	i := 0
+	for i < len(s) {
+		switch s[i] {
+		case '(':
+			depth++
+			i++
+		case ')':
+			depth--
+			i++
+		case ' ':
+			if depth == 0 {
+				if i+5 <= len(s) && s[i+1:i+5] == "AND " {
+					segments = append(segments, s[start:i])
+					delims = append(delims, " AND ")
+					start = i + 5
+					i += 5
+					continue
+				}
+				if i+4 <= len(s) && s[i+1:i+4] == "OR " {
+					segments = append(segments, s[start:i])
+					delims = append(delims, " OR ")
+					start = i + 4
+					i += 4
+					continue
+				}
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	segments = append(segments, s[start:])
+	return segments, delims
+}
+
+// removeOuterBalancedParens strips outermost balanced parentheses repeatedly.
+// So "( (a) AND (b) )" becomes "(a) AND (b)", and "(ts < (x - y))" becomes "ts < (x - y)".
+func removeOuterBalancedParens(s string) string {
+	for {
+		s = strings.TrimSpace(s)
+		if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+			return s
+		}
+		// Check that the closing ')' at end is the match for the opening '(' at start
+		depth := 1
+		for i := 1; i < len(s)-1; i++ {
+			if s[i] == '(' {
+				depth++
+			} else if s[i] == ')' {
+				depth--
+				if depth == 0 {
+					return s // inner ')' closed the opening '(', so outer parens are not balanced
+				}
+			}
+		}
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
 }
 
 // removeRedundantParens removes redundant parentheses from expressions
