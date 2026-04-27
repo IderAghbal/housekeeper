@@ -2,6 +2,7 @@ package clickhouse
 
 import (
 	"context"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/pseudomuto/housekeeper/pkg/parser"
@@ -132,7 +133,16 @@ func injectOnCluster(statements []*parser.Statement, cluster string) []*parser.S
 		return statements
 	}
 
-	clusterName := &cluster
+	// Wrap a bare macro reference (e.g. "{cluster}") in single quotes so
+	// the injected value matches the form the parser captures from source
+	// SQL like `ON CLUSTER '{cluster}'`. Without this, diff comparison
+	// against the parsed source mistakes the missing quotes for a cluster
+	// configuration change.
+	clusterValue := cluster
+	if strings.HasPrefix(cluster, "{") && strings.HasSuffix(cluster, "}") {
+		clusterValue = "'" + cluster + "'"
+	}
+	clusterName := &clusterValue
 
 	for _, stmt := range statements {
 		switch {
