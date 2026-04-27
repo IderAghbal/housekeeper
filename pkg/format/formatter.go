@@ -222,11 +222,8 @@ func FormatTTLClause(ttl *parser.TableTTLClause) string {
 	}
 	f := New(Defaults)
 	result := f.formatExpression(&ttl.Expression)
-	if ttl.Delete != nil {
-		result += " DELETE"
-		if ttl.Delete.Where != nil {
-			result += " WHERE " + f.formatExpression(ttl.Delete.Where)
-		}
+	if action := f.formatTTLAction(ttl.Action); action != "" {
+		result += " " + action
 	}
 	return result
 }

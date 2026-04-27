@@ -166,29 +166,39 @@ func ttlClausesEqual(a, b *parser.TableTTLClause) bool {
 	if !expressionsEqualWithIntervalNormalization(&a.Expression, &b.Expression) {
 		return false
 	}
-	// Compare Delete clauses with special handling for default DELETE action
-	// DELETE without WHERE is the default action, so:
-	// - nil Delete == Delete{Where: nil}
-	// - Both are considered equal
-	return ttlDeleteClausesEqual(a.Delete, b.Delete)
+	// Compare action clauses with special handling for default DELETE action
+	// DELETE without WHERE is the default action, so a nil action and an
+	// explicit DELETE without WHERE are considered equal.
+	return ttlActionsEqual(a.Action, b.Action)
 }
 
-// ttlDeleteClausesEqual compares TTL Delete clauses, treating DELETE without WHERE as the default
-func ttlDeleteClausesEqual(a, b *parser.TTLDelete) bool {
-	// DELETE without WHERE is the default action
-	// So nil and &TTLDelete{Where: nil} are equivalent
-	aIsDefault := a == nil || a.Where == nil
-	bIsDefault := b == nil || b.Where == nil
-
-	if aIsDefault && bIsDefault {
+// ttlActionsEqual compares TTL action clauses, treating nil and a bare DELETE
+// (without WHERE) as equivalent because DELETE is the server-side default.
+func ttlActionsEqual(a, b *parser.TTLAction) bool {
+	aDelete := bareDeleteAction(a)
+	bDelete := bareDeleteAction(b)
+	if aDelete && bDelete {
 		return true
 	}
-	if aIsDefault != bIsDefault {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
 		return false
 	}
-	// Both have WHERE clauses - compare them
-	return a.Where.Equal(b.Where)
+	return a.Equal(b)
 }
+
+// bareDeleteAction reports whether a is nil or an explicit DELETE without WHERE
+// (the two forms ClickHouse treats as the implicit default).
+func bareDeleteAction(a *parser.TTLAction) bool {
+	if a == nil {
+		return true
+	}
+	return a.Delete != nil && a.Delete.Where == nil &&
+		a.ToDisk == nil && a.ToVolume == nil && a.Recompress == nil
+}
+
 
 // expressionsEqualWithIntervalNormalization compares two expressions for equality,
 // treating INTERVAL X UNIT and toIntervalUnit(X) as equivalent.
@@ -1342,13 +1352,7 @@ func writeTableOptions(sql *strings.Builder, table *TableInfo) {
 	if table.TTL != nil {
 		sql.WriteString("\nTTL ")
 		sql.WriteString(table.TTL.Expression.String())
-		if table.TTL.Delete != nil {
-			sql.WriteString(" DELETE")
-			if table.TTL.Delete.Where != nil {
-				sql.WriteString(" WHERE ")
-				sql.WriteString(table.TTL.Delete.Where.String())
-			}
-		}
+		sql.WriteString(formatTTLAction(table.TTL.Action))
 	}
 
 	// Settings

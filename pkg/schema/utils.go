@@ -9,6 +9,28 @@ import (
 	"github.com/pseudomuto/housekeeper/pkg/parser"
 )
 
+// formatTTLAction renders the optional TTL action keyword for SQL output
+func formatTTLAction(action *parser.TTLAction) string {
+	if action == nil {
+		return ""
+	}
+	switch {
+	case action.Delete != nil:
+		out := " DELETE"
+		if action.Delete.Where != nil {
+			out += " WHERE " + action.Delete.Where.String()
+		}
+		return out
+	case action.ToDisk != nil:
+		return " TO DISK " + *action.ToDisk
+	case action.ToVolume != nil:
+		return " TO VOLUME " + *action.ToVolume
+	case action.Recompress != nil:
+		return " RECOMPRESS " + action.Recompress.Codec.String()
+	}
+	return ""
+}
+
 // removeQuotes removes surrounding single quotes from a string
 func removeQuotes(s string) string {
 	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {

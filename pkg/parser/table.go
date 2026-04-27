@@ -218,11 +218,25 @@ type (
 	}
 
 	// TableTTLClause represents table-level TTL expression
-	// Syntax: TTL expression [DELETE [WHERE condition]]
+	//   TTL expr [DELETE [WHERE expr] | TO DISK 'name' | TO VOLUME 'name' | RECOMPRESS CODEC(...)]
 	TableTTLClause struct {
 		TTL        string     `parser:"'TTL'"`
 		Expression Expression `parser:"@@"`
-		Delete     *TTLDelete `parser:"@@?"`
+		Action     *TTLAction `parser:"@@?"`
+	}
+
+	// TTLAction represents the optional action keyword on a table-level TTL clause
+	TTLAction struct {
+		Delete     *TTLDelete     `parser:"  @@"`
+		ToDisk     *string        `parser:"| 'TO' 'DISK' @String"`
+		ToVolume   *string        `parser:"| 'TO' 'VOLUME' @String"`
+		Recompress *TTLRecompress `parser:"| @@"`
+	}
+
+	// TTLRecompress represents the RECOMPRESS CODEC(...) action of a TTL clause
+	TTLRecompress struct {
+		Recompress string      `parser:"'RECOMPRESS'"`
+		Codec      CodecClause `parser:"@@"`
 	}
 
 	// TableSettingsClause represents SETTINGS clause
@@ -743,8 +757,33 @@ func (t *TableTTLClause) Equal(other *TableTTLClause) bool {
 	if !t.Expression.Equal(&other.Expression) {
 		return false
 	}
-	// Compare Delete clause
-	return compare.PointersWithEqual(t.Delete, other.Delete, (*TTLDelete).Equal)
+	// Compare action clause
+	return compare.PointersWithEqual(t.Action, other.Action, (*TTLAction).Equal)
+}
+
+// Equal compares two TTLAction instances for equality
+func (t *TTLAction) Equal(other *TTLAction) bool {
+	if eq, done := compare.NilCheck(t, other); !done {
+		return eq
+	}
+	if !compare.PointersWithEqual(t.Delete, other.Delete, (*TTLDelete).Equal) {
+		return false
+	}
+	if !compare.Pointers(t.ToDisk, other.ToDisk) {
+		return false
+	}
+	if !compare.Pointers(t.ToVolume, other.ToVolume) {
+		return false
+	}
+	return compare.PointersWithEqual(t.Recompress, other.Recompress, (*TTLRecompress).Equal)
+}
+
+// Equal compares two TTLRecompress instances for equality
+func (t *TTLRecompress) Equal(other *TTLRecompress) bool {
+	if eq, done := compare.NilCheck(t, other); !done {
+		return eq
+	}
+	return t.Codec.Equal(&other.Codec)
 }
 
 // Equal compares two TTLDelete instances for equality
