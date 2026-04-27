@@ -59,7 +59,18 @@ type (
 
 	// templateData contains all the data available to templates during initialization
 	templateData struct {
+		// Cluster is the user-facing cluster identifier emitted into DDL
+		// output as `ON CLUSTER <name>`. May be a CH server-side macro
+		// reference (e.g. `'{cluster}'`).
 		Cluster string
+
+		// DevClusterName is a sanitized cluster name safe to use as an XML
+		// element name in the dev-container config. When Cluster is a CH
+		// macro reference, that string is not a legal XML identifier, so
+		// the XML config falls back to this fixed name. Queries inside
+		// the dev container that use `{cluster}` resolve to this same
+		// name via the <macros> section.
+		DevClusterName string
 	}
 
 	// Project represents a ClickHouse schema management project.
@@ -137,10 +148,11 @@ func (p *Project) Initialize(options InitOptions) error {
 	}
 
 	// Prepare template data
-	data := templateData(options)
+	data := templateData{Cluster: options.Cluster}
 	if data.Cluster == "" {
 		data.Cluster = "cluster" // default cluster name
 	}
+	data.DevClusterName = devClusterName(data.Cluster)
 
 	// Use the unified overlayFS method to materialize the embedded image
 	return p.overlayFS(image, &data)
@@ -279,4 +291,24 @@ func (p *Project) renderTemplate(name string, content []byte, data templateData)
 	}
 
 	return buf.Bytes(), nil
+}
+
+// devClusterName derives an XML-safe cluster identifier from the user-supplied
+// cluster name. CH macro references (e.g. `'{cluster}'`, `{shard}`) contain
+// braces and quotes that are not legal in XML element names, so the dev
+// container config falls back to a fixed identifier. Plain cluster names pass
+// through unchanged.
+func devClusterName(cluster string) string {
+	for _, r := range cluster {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_', r == '-':
+			continue
+		default:
+			return "housekeeper_dev"
+		}
+	}
+	return cluster
 }

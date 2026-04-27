@@ -10,23 +10,27 @@
     <http_port>8123</http_port>
     <tcp_port>9000</tcp_port>
 
-    <!-- Macros for replica names -->
+    <!-- Macros for replica names. {cluster} resolves to DevClusterName so
+         queries that use ON CLUSTER '{cluster}' work inside the dev
+         container regardless of the user-facing cluster name in DDL. -->
     <macros>
-        <cluster>{{.Cluster}}</cluster>
+        <cluster>{{.DevClusterName}}</cluster>
         <shard>01</shard>
         <replica>replica_1</replica>
     </macros>
 
-    <!-- Cluster configuration with single replica -->
+    <!-- Cluster configuration with single replica. The element name uses
+         DevClusterName because CH macro references like '{cluster}' are
+         not legal XML identifiers. -->
     <remote_servers>
-        <{{.Cluster}}>
+        <{{.DevClusterName}}>
             <shard>
                 <replica>
                     <host>localhost</host>
                     <port>9000</port>
                 </replica>
             </shard>
-        </{{.Cluster}}>
+        </{{.DevClusterName}}>
     </remote_servers>
 
     <!-- Keeper configuration for replication -->
