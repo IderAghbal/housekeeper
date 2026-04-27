@@ -247,9 +247,10 @@ type (
 
 	// TableSetting represents a single setting in SETTINGS clause
 	TableSetting struct {
-		Name  string `parser:"@(Ident | BacktickIdent)"`
-		Eq    string `parser:"'='"`
-		Value string `parser:"@(String | Number | Ident | BacktickIdent)"`
+		LeadingComments []string `parser:"@(Comment | MultilineComment)*"`
+		Name            string   `parser:"@(Ident | BacktickIdent)"`
+		Eq              string   `parser:"'='"`
+		Value           string   `parser:"@(String | Number | Ident | BacktickIdent)"`
 	}
 
 	// AttachTableStmt represents an ATTACH TABLE statement.
