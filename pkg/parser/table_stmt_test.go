@@ -56,6 +56,15 @@ func TestCreateTable(t *testing.T) {
 		// Cluster macro references ('{cluster}', '{shard}', etc.)
 		{name: "on_cluster_macro", sql: `CREATE TABLE steam_market_data ON CLUSTER '{cluster}' (ts DateTime64(6), price Int64) ENGINE = ReplicatedReplacingMergeTree() ORDER BY ts;`},
 
+		// TTL DELETE syntax
+		{name: "ttl_delete_pr91", sql: `CREATE TABLE logs (
+			id UInt64,
+			message String,
+			timestamp DateTime
+		) ENGINE = MergeTree()
+		ORDER BY (id, timestamp)
+		TTL timestamp + INTERVAL 30 DAY DELETE;`},
+
 		// Backticks
 		{name: "with_backticks", sql: "CREATE TABLE `user-db`.`order-table` (`user-id` UInt64, `order-id` String, `order-date` Date, `select` String, `group` LowCardinality(String)) ENGINE = MergeTree() ORDER BY (`user-id`, `order-date`);"},
 
