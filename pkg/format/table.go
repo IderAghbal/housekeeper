@@ -60,7 +60,7 @@ func (f *Formatter) buildCreateTableHeader(stmt *parser.CreateTableStmt) []strin
 	headerParts = append(headerParts, f.qualifiedName(stmt.Database, stmt.Name))
 
 	if stmt.OnCluster != nil {
-		headerParts = append(headerParts, f.keyword("ON CLUSTER"), f.identifier(*stmt.OnCluster))
+		headerParts = append(headerParts, f.keyword("ON CLUSTER"), utils.FormatClusterName(*stmt.OnCluster))
 	}
 
 	// Handle AS clause
@@ -291,7 +291,7 @@ func (f *Formatter) alterTable(w io.Writer, stmt *parser.AlterTableStmt) error {
 		headerParts = append(headerParts, f.qualifiedName(stmt.Database, stmt.Name))
 
 		if stmt.OnCluster != nil {
-			headerParts = append(headerParts, f.keyword("ON CLUSTER"), f.identifier(*stmt.OnCluster))
+			headerParts = append(headerParts, f.keyword("ON CLUSTER"), utils.FormatClusterName(*stmt.OnCluster))
 		}
 
 		lines = append(lines, strings.Join(headerParts, " "))
