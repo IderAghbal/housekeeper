@@ -124,6 +124,22 @@ func TestCreateTable(t *testing.T) {
 		{name: "ttl_to_volume", sql: `CREATE TABLE tiered_events (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id TTL ts + INTERVAL 1 WEEK TO VOLUME 'archive';`},
 		{name: "ttl_recompress", sql: `CREATE TABLE compressed_events (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id TTL ts + INTERVAL 1 DAY RECOMPRESS CODEC(ZSTD(9));`},
 
+		// Comments inside engine argument lists
+		{name: "engine_args_leading_comment", sql: `CREATE TABLE replicated_events (id UInt64, ver UInt64) ENGINE = ReplicatedReplacingMergeTree(
+    -- shared keeper path keeps replicas in sync
+    '/clickhouse/tables/{shard}/{database}/replicated_events',
+    '{replica}',
+    ver
+) ORDER BY id;`},
+		{name: "engine_args_inter_arg_comments", sql: `CREATE TABLE replicated_events (id UInt64, ver UInt64) ENGINE = ReplicatedReplacingMergeTree(
+    '/clickhouse/tables/{shard}/replicated_events',
+    -- per-replica identity from server macros
+    '{replica}',
+    -- monotonic version column for replacement
+    ver
+) ORDER BY id;`},
+		{name: "engine_args_block_comment", sql: `CREATE TABLE replicated_events (id UInt64, ver UInt64) ENGINE = ReplicatedReplacingMergeTree(/* keeper path */ '/p', '{replica}', ver) ORDER BY id;`},
+
 		// CREATE TABLE AS with table functions
 		{name: "as_remote", sql: `CREATE TABLE remote_copy AS remote('host:9000', 'db', 'table') ENGINE = MergeTree() ORDER BY id;`},
 		{name: "as_cluster", sql: `CREATE TABLE cluster_data AS cluster('my_cluster', 'default', 'events') ENGINE = MergeTree() ORDER BY id;`},
