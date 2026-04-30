@@ -255,6 +255,131 @@ func TestRequiresDropCreate(t *testing.T) {
 	})
 }
 
+// TestSubstituteDatabaseMacro pins the `{database}` macro normalization
+// that lets source DDL (carrying the macro literal) compare equal to
+// live SHOW CREATE output (carrying the substituted form). Without
+// this, every Replicated*MergeTree using `{database}` in its keeper
+// path would diff as drift on every plan.
+func TestSubstituteDatabaseMacro(t *testing.T) {
+	t.Run("substitutes in keeper path", func(t *testing.T) {
+		eng := &parser.TableEngine{
+			Name: "ReplicatedReplacingMergeTree",
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/{database}/audit_log'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		}
+		out := substituteDatabaseMacro(eng, "forjeron")
+		require.Equal(t, "'/clickhouse/tables/{shard}/forjeron/audit_log'", *out.Parameters[0].String)
+		require.Equal(t, "'{replica}'", *out.Parameters[1].String, "{replica} must NOT be substituted")
+		// Original must be untouched (function returns a copy).
+		require.Equal(t, "'/clickhouse/tables/{shard}/{database}/audit_log'", *eng.Parameters[0].String)
+	})
+
+	t.Run("preserves {shard} and {replica}", func(t *testing.T) {
+		eng := &parser.TableEngine{
+			Name: "ReplicatedMergeTree",
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/{database}/tbl'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		}
+		out := substituteDatabaseMacro(eng, "notify")
+		require.Equal(t, "'/clickhouse/tables/{shard}/notify/tbl'", *out.Parameters[0].String)
+		require.Equal(t, "'{replica}'", *out.Parameters[1].String)
+	})
+
+	t.Run("no macros means same pointer back", func(t *testing.T) {
+		eng := &parser.TableEngine{
+			Name: "ReplicatedMergeTree",
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/forjeron/tbl'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		}
+		out := substituteDatabaseMacro(eng, "forjeron")
+		require.Same(t, eng, out, "no-macro engine should return its input pointer")
+	})
+
+	t.Run("empty database name is a no-op", func(t *testing.T) {
+		eng := &parser.TableEngine{
+			Name: "ReplicatedMergeTree",
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/{database}/tbl'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		}
+		out := substituteDatabaseMacro(eng, "")
+		require.Same(t, eng, out, "empty dbName should return input pointer unchanged")
+	})
+
+	t.Run("nil engine is a no-op", func(t *testing.T) {
+		require.Nil(t, substituteDatabaseMacro(nil, "anything"))
+	})
+
+	t.Run("multi-occurrence substitutes all", func(t *testing.T) {
+		eng := &parser.TableEngine{
+			Name: "ReplicatedMergeTree",
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/{database}/foo/{database}'")},
+			},
+		}
+		out := substituteDatabaseMacro(eng, "x")
+		require.Equal(t, "'/clickhouse/x/foo/x'", *out.Parameters[0].String)
+	})
+}
+
+// TestTableEqualWithDatabaseMacro pins that source carrying the
+// `{database}` macro and live carrying the substituted form are
+// considered equal — the integration of substituteDatabaseMacro into
+// TableInfo.Equal.
+func TestTableEqualWithDatabaseMacro(t *testing.T) {
+	source := &TableInfo{
+		Name:     "audit_log",
+		Database: "forjeron",
+		Engine: &parser.TableEngine{
+			Name: "ReplicatedReplacingMergeTree",
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/{database}/audit_log'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		},
+	}
+	live := &TableInfo{
+		Name:     "audit_log",
+		Database: "forjeron",
+		Engine: &parser.TableEngine{
+			Name: "ReplicatedReplacingMergeTree",
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/forjeron/audit_log'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		},
+	}
+	require.True(t, source.Equal(live),
+		"macro source must equal substituted live form for the same database")
+
+	// Negative control: if the live form has a different database, they
+	// must NOT be equal even after substitution (substitution is per-
+	// table; both sides resolve against their own Database, which is
+	// the same field for the same table — and renames go through a
+	// separate code path).
+	source.Database = "forjeron"
+	mismatched := &TableInfo{
+		Name:     "audit_log",
+		Database: "forjeron",
+		Engine: &parser.TableEngine{
+			Name: "ReplicatedReplacingMergeTree",
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/wrong_db/audit_log'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		},
+	}
+	require.False(t, source.Equal(mismatched),
+		"macro source must still detect drift against a different live keeper path")
+}
+
 func TestIsMergeTreeFamily(t *testing.T) {
 	mergeTree := []string{
 		"MergeTree",
