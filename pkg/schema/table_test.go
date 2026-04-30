@@ -59,6 +59,54 @@ func TestEnginesEqual(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name: "ReplicatedReplacingMergeTree() target equals live form (auto-expanded)",
+			target: &parser.TableEngine{
+				Name:       "ReplicatedReplacingMergeTree",
+				Parameters: []parser.EngineParameter{},
+			},
+			current: &parser.TableEngine{
+				Name: "ReplicatedReplacingMergeTree",
+				Parameters: []parser.EngineParameter{
+					{String: stringPtr("'/clickhouse/tables/{uuid}/{shard}'")},
+					{String: stringPtr("'{replica}'")},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "ReplicatedReplacingMergeTree with different keeper paths is unequal",
+			target: &parser.TableEngine{
+				Name: "ReplicatedReplacingMergeTree",
+				Parameters: []parser.EngineParameter{
+					{String: stringPtr("'/clickhouse/tables/{shard}/forjeron/audit_log'")},
+					{String: stringPtr("'{replica}'")},
+				},
+			},
+			current: &parser.TableEngine{
+				Name: "ReplicatedReplacingMergeTree",
+				Parameters: []parser.EngineParameter{
+					{String: stringPtr("'/clickhouse/tables/{shard}/{database}/audit_log'")},
+					{String: stringPtr("'{replica}'")},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "ReplicatedAggregatingMergeTree() target equals live form (auto-expanded)",
+			target: &parser.TableEngine{
+				Name:       "ReplicatedAggregatingMergeTree",
+				Parameters: []parser.EngineParameter{},
+			},
+			current: &parser.TableEngine{
+				Name: "ReplicatedAggregatingMergeTree",
+				Parameters: []parser.EngineParameter{
+					{String: stringPtr("'/clickhouse/tables/{uuid}/{shard}'")},
+					{String: stringPtr("'{replica}'")},
+				},
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -66,6 +114,181 @@ func TestEnginesEqual(t *testing.T) {
 			result := enginesEqual(tt.target, tt.current)
 			require.Equal(t, tt.expected, result)
 		})
+	}
+}
+
+// TestRequiresDropCreate exercises the parameter-equality DROP+CREATE
+// gate across the full *MergeTree family. Before the fix, only bare
+// `ReplicatedMergeTree` was checked; every other variant
+// (ReplicatedReplacingMergeTree, ReplicatedSummingMergeTree, etc.)
+// silently let parameter drift through. The cases below pin each
+// variant to the corrected behaviour.
+func TestRequiresDropCreate(t *testing.T) {
+	differentKeeperPath := func(name string) (current, target *parser.TableEngine) {
+		current = &parser.TableEngine{
+			Name: name,
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/{database}/tbl'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		}
+		target = &parser.TableEngine{
+			Name: name,
+			Parameters: []parser.EngineParameter{
+				{String: stringPtr("'/clickhouse/tables/{shard}/forjeron/tbl'")},
+				{String: stringPtr("'{replica}'")},
+			},
+		}
+		return
+	}
+
+	t.Run("Replicated*MergeTree variants flag keeper-path drift", func(t *testing.T) {
+		variants := []string{
+			"ReplicatedMergeTree",
+			"ReplicatedReplacingMergeTree",
+			"ReplicatedSummingMergeTree",
+			"ReplicatedAggregatingMergeTree",
+			"ReplicatedCollapsingMergeTree",
+			"ReplicatedVersionedCollapsingMergeTree",
+			"ReplicatedGraphiteMergeTree",
+		}
+		for _, name := range variants {
+			t.Run(name, func(t *testing.T) {
+				current, target := differentKeeperPath(name)
+				require.True(t, requiresDropCreate(current, target),
+					"keeper-path drift on %s must require DROP+CREATE", name)
+			})
+		}
+	})
+
+	t.Run("non-replicated *MergeTree variants flag parameter drift", func(t *testing.T) {
+		// Sign column on Collapsing variants is baked into the data
+		// layout: changing it requires DROP+CREATE.
+		current := &parser.TableEngine{
+			Name:       "CollapsingMergeTree",
+			Parameters: []parser.EngineParameter{{Ident: stringPtr("sign_v1")}},
+		}
+		target := &parser.TableEngine{
+			Name:       "CollapsingMergeTree",
+			Parameters: []parser.EngineParameter{{Ident: stringPtr("sign_v2")}},
+		}
+		require.True(t, requiresDropCreate(current, target))
+	})
+
+	t.Run("matching parameters do not require DROP+CREATE", func(t *testing.T) {
+		variants := []string{
+			"ReplicatedMergeTree",
+			"ReplicatedReplacingMergeTree",
+			"ReplicatedAggregatingMergeTree",
+		}
+		for _, name := range variants {
+			t.Run(name, func(t *testing.T) {
+				engine := &parser.TableEngine{
+					Name: name,
+					Parameters: []parser.EngineParameter{
+						{String: stringPtr("'/clickhouse/tables/{shard}/forjeron/tbl'")},
+						{String: stringPtr("'{replica}'")},
+					},
+				}
+				other := &parser.TableEngine{
+					Name:       engine.Name,
+					Parameters: append([]parser.EngineParameter{}, engine.Parameters...),
+				}
+				require.False(t, requiresDropCreate(engine, other),
+					"identical params on %s must not require DROP+CREATE", name)
+			})
+		}
+	})
+
+	t.Run("Replicated*() empty target equals live auto-expanded form", func(t *testing.T) {
+		// CH auto-expands Replicated*MergeTree() with no args using
+		// default_replica_path / default_replica_name. The empty
+		// source form must compare equal to the live substituted form
+		// to avoid spurious DROP+CREATEs on every plan.
+		variants := []string{
+			"ReplicatedMergeTree",
+			"ReplicatedReplacingMergeTree",
+			"ReplicatedSummingMergeTree",
+			"ReplicatedAggregatingMergeTree",
+		}
+		for _, name := range variants {
+			t.Run(name, func(t *testing.T) {
+				target := &parser.TableEngine{Name: name}
+				current := &parser.TableEngine{
+					Name: name,
+					Parameters: []parser.EngineParameter{
+						{String: stringPtr("'/clickhouse/tables/{uuid}/{shard}'")},
+						{String: stringPtr("'{replica}'")},
+					},
+				}
+				require.False(t, requiresDropCreate(current, target),
+					"%s() vs auto-expanded live form must not require DROP+CREATE", name)
+			})
+		}
+	})
+
+	t.Run("non-MergeTree engines do not trigger DROP+CREATE here", func(t *testing.T) {
+		// Distributed / Memory / View engines have their own paths
+		// (isViewLikeEngine, integration-engine handling). The
+		// MergeTree-family check must not absorb them.
+		current := &parser.TableEngine{
+			Name:       "Distributed",
+			Parameters: []parser.EngineParameter{{Ident: stringPtr("cluster_v1")}},
+		}
+		target := &parser.TableEngine{
+			Name:       "Distributed",
+			Parameters: []parser.EngineParameter{{Ident: stringPtr("cluster_v2")}},
+		}
+		require.False(t, requiresDropCreate(current, target))
+	})
+
+	t.Run("nil engines short-circuit", func(t *testing.T) {
+		require.False(t, requiresDropCreate(nil, nil))
+		require.False(t, requiresDropCreate(&parser.TableEngine{Name: "MergeTree"}, nil))
+		require.False(t, requiresDropCreate(nil, &parser.TableEngine{Name: "MergeTree"}))
+	})
+
+	t.Run("name mismatch short-circuits (handled by validation elsewhere)", func(t *testing.T) {
+		current := &parser.TableEngine{Name: "MergeTree"}
+		target := &parser.TableEngine{Name: "ReplicatedMergeTree"}
+		require.False(t, requiresDropCreate(current, target))
+	})
+}
+
+func TestIsMergeTreeFamily(t *testing.T) {
+	mergeTree := []string{
+		"MergeTree",
+		"ReplacingMergeTree",
+		"SummingMergeTree",
+		"AggregatingMergeTree",
+		"CollapsingMergeTree",
+		"VersionedCollapsingMergeTree",
+		"GraphiteMergeTree",
+		"ReplicatedMergeTree",
+		"ReplicatedReplacingMergeTree",
+		"ReplicatedSummingMergeTree",
+		"ReplicatedAggregatingMergeTree",
+		"ReplicatedCollapsingMergeTree",
+		"ReplicatedVersionedCollapsingMergeTree",
+		"ReplicatedGraphiteMergeTree",
+	}
+	for _, name := range mergeTree {
+		require.True(t, isMergeTreeFamily(name), "%s should be in the MergeTree family", name)
+	}
+	notMergeTree := []string{
+		"Distributed",
+		"Memory",
+		"View",
+		"MaterializedView",
+		"Kafka",
+		"RabbitMQ",
+		"PostgreSQL",
+		"Buffer",
+		"Dictionary",
+		"",
+	}
+	for _, name := range notMergeTree {
+		require.False(t, isMergeTreeFamily(name), "%s should NOT be in the MergeTree family", name)
 	}
 }
 

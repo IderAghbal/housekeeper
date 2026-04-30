@@ -260,10 +260,25 @@ func (c ColumnInfo) Equal(other ColumnInfo) bool {
 		equalAST(c.TTL, other.TTL)
 }
 
+// isMergeTreeFamily reports whether name is a *MergeTree-family engine
+// (MergeTree itself, the deduplicating/aggregating/collapsing variants,
+// or any of their Replicated counterparts). All members of this family
+// encode their parameters into either replication metadata (the keeper
+// path / replica name on Replicated*) or the data layout (sign column,
+// version column, summing columns, etc.) and therefore cannot have
+// those parameters altered in place — parameter changes require
+// DROP+CREATE.
+func isMergeTreeFamily(name string) bool {
+	return strings.HasSuffix(name, "MergeTree")
+}
+
 // enginesEqual compares two table engines with special handling for parameter normalization.
 // This handles cases where:
-// 1. ReplicatedMergeTree() is auto-expanded by ClickHouse to include paths
-// 2. Kafka vs Kafka() are semantically equivalent (empty params vs no params)
+//  1. Replicated*MergeTree() with no explicit args is auto-expanded by
+//     ClickHouse using the server's default_replica_path /
+//     default_replica_name settings — every Replicated* variant gets
+//     this treatment, not just bare ReplicatedMergeTree.
+//  2. Kafka vs Kafka() are semantically equivalent (empty params vs no params)
 func enginesEqual(target, current *parser.TableEngine) bool {
 	// Use standard equalAST for nil checks
 	if target == nil || current == nil {
@@ -275,11 +290,14 @@ func enginesEqual(target, current *parser.TableEngine) bool {
 		return false
 	}
 
-	// Special handling for ReplicatedMergeTree when target has no parameters
-	// ClickHouse auto-expands ReplicatedMergeTree() to include paths like
-	// ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')
-	if target.Name == "ReplicatedMergeTree" && len(target.Parameters) == 0 {
-		return true // Names match and target has no params, consider equal
+	// Special handling for any Replicated* engine when target has no parameters.
+	// ClickHouse auto-expands Replicated*MergeTree() forms using the
+	// default_replica_path / default_replica_name server settings; the
+	// live SHOW CREATE TABLE always carries the substituted form even
+	// though the source DDL omitted the args. Treat the empty-target
+	// case as equal to avoid a spurious diff on every plan.
+	if strings.HasPrefix(target.Name, "Replicated") && len(target.Parameters) == 0 {
+		return true
 	}
 
 	// For engines where empty params are equivalent to no params (Kafka, etc.)
@@ -515,7 +533,22 @@ func isViewLikeEngine(engine *parser.TableEngine) bool {
 }
 
 // requiresDropCreate determines if changing from current engine to target engine
-// requires DROP+CREATE rather than ALTER TABLE operations
+// requires DROP+CREATE rather than ALTER TABLE operations.
+//
+// Every *MergeTree-family engine bakes its parameters into either
+// replication metadata (Replicated* uses ZooKeeper/Keeper paths +
+// replica names that can't be relocated in-place) or the data layout
+// (Replacing*'s version column, Collapsing*'s sign column, Summing*'s
+// summing columns, Graphite*'s rollup config, etc.). None of those can
+// be modified by ALTER TABLE, so any parameter mismatch must be
+// resolved by dropping and recreating the table.
+//
+// Historically this check fired only for bare `ReplicatedMergeTree`,
+// which silently let parameter drift through on every other variant
+// (ReplicatedReplacingMergeTree, ReplicatedSummingMergeTree, etc.) —
+// a real bug that would let a keeper-path change in source go
+// unapplied and undetected by the drift gate. The check now covers
+// the whole *MergeTree family.
 func requiresDropCreate(current, target *parser.TableEngine) bool {
 	if current == nil || target == nil {
 		return false
@@ -527,16 +560,12 @@ func requiresDropCreate(current, target *parser.TableEngine) bool {
 		return false
 	}
 
-	// ReplicatedMergeTree parameter changes require DROP+CREATE
-	// because you cannot ALTER the replication path or replica name
-	if current.Name == "ReplicatedMergeTree" {
-		// Use our special enginesEqual logic that handles the no-parameters case
-		// If engines are not equal (respecting the no-parameters special case), DROP+CREATE is required
+	if isMergeTreeFamily(current.Name) {
+		// Use enginesEqual which knows about the Replicated* empty-args
+		// auto-expansion special case. If engines are not equal under
+		// that comparator, DROP+CREATE is required.
 		return !enginesEqual(target, current)
 	}
-
-	// Other engines with parameter changes might be added here in the future
-	// For now, most other parameter changes can be handled with ALTER TABLE
 
 	return false
 }
