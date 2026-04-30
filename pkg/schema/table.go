@@ -267,29 +267,40 @@ func (c ColumnInfo) Equal(other ColumnInfo) bool {
 }
 
 // substituteDatabaseMacro returns a copy of eng with the `{database}`
-// macro substituted to dbName in any String engine parameter. ClickHouse
-// resolves `{database}` to the table's database at table-creation time,
-// so the live `SHOW CREATE TABLE` output (and therefore housekeeper's
-// dumped current state) carries the substituted form, while source DDL
-// continues to carry the macro literal. Without this normalization,
-// every Replicated*MergeTree table whose source uses the `{database}`
-// macro would diff as drift on every plan — a spurious DROP+CREATE
-// proposal on each run, indistinguishable from a real keeper-path
-// change. dbName == "" is a no-op (e.g. when target.Database is empty,
-// which means the table didn't carry a database qualifier in source).
+// macro substituted to dbName in any string-literal engine parameter.
+// ClickHouse resolves `{database}` to the table's database at
+// table-creation time, so the live `SHOW CREATE TABLE` output (and
+// therefore housekeeper's dumped current state) carries the
+// substituted form, while source DDL continues to carry the macro
+// literal. Without this normalization, every Replicated*MergeTree
+// table whose source uses the `{database}` macro would diff as drift
+// on every plan — a spurious DROP+CREATE proposal on each run,
+// indistinguishable from a real keeper-path change. dbName == "" is
+// a no-op (e.g. when target.Database is empty, which means the table
+// didn't carry a database qualifier in source).
 //
 // Other CH macros (`{shard}`, `{replica}`, `{cluster}`) are NOT
 // substituted here: those resolve from server config (macros.xml),
 // and live SHOW CREATE preserves them verbatim — no normalization is
 // needed for them. `{cluster}` is handled separately by
 // inferSchemaCluster's reverse-rewrite path.
+//
+// Implementation note: the parser's EngineParameter alternation
+// prefers the Expression branch over String/Number/Ident, so even a
+// simple `'/path'` literal arrives here as
+// `Expression -> Or -> ... -> Primary -> Literal -> StringValue`.
+// We walk the four-pointer chain (And/Not/Comparison/Addition only
+// have a single populated child for a bare literal) to reach the
+// StringValue, substitute the macro in place on the COPY, and leave
+// the original AST untouched. Parameters that aren't bare string
+// literals (function calls, identifiers, numbers) survive unchanged.
 func substituteDatabaseMacro(eng *parser.TableEngine, dbName string) *parser.TableEngine {
 	if eng == nil || dbName == "" {
 		return eng
 	}
 	needsCopy := false
 	for i := range eng.Parameters {
-		if s := eng.Parameters[i].String; s != nil && strings.Contains(*s, "{database}") {
+		if hasDatabaseMacro(&eng.Parameters[i]) {
 			needsCopy = true
 			break
 		}
@@ -301,12 +312,117 @@ func substituteDatabaseMacro(eng *parser.TableEngine, dbName string) *parser.Tab
 	out.Parameters = make([]parser.EngineParameter, len(eng.Parameters))
 	for i, p := range eng.Parameters {
 		out.Parameters[i] = p
+		if !hasDatabaseMacro(&p) {
+			continue
+		}
+		// Direct String/Ident slots — older engine-param syntax variants.
 		if p.String != nil && strings.Contains(*p.String, "{database}") {
-			substituted := strings.ReplaceAll(*p.String, "{database}", dbName)
-			out.Parameters[i].String = &substituted
+			s := strings.ReplaceAll(*p.String, "{database}", dbName)
+			out.Parameters[i].String = &s
+			continue
+		}
+		// Expression slot (the common case): deep-copy the chain to
+		// the StringValue and substitute there.
+		if p.Expression != nil {
+			out.Parameters[i].Expression = expressionWithSubstitutedDatabaseMacro(p.Expression, dbName)
 		}
 	}
 	return &out
+}
+
+// hasDatabaseMacro reports whether p contains "{database}" as a
+// top-level string literal (covering both the direct `String` slot
+// and the `Expression -> ... -> Literal.StringValue` slot).
+func hasDatabaseMacro(p *parser.EngineParameter) bool {
+	if p == nil {
+		return false
+	}
+	if p.String != nil && strings.Contains(*p.String, "{database}") {
+		return true
+	}
+	if s := engineExprStringLiteral(p.Expression); s != nil && strings.Contains(*s, "{database}") {
+		return true
+	}
+	return false
+}
+
+// engineExprStringLiteral returns a pointer to the StringValue if
+// expr is a single-literal Expression (the common shape produced by
+// the parser for a quoted engine arg like '/clickhouse/...'). nil if
+// expr is anything else (function call, arithmetic, identifier, …).
+func engineExprStringLiteral(expr *parser.Expression) *string {
+	if expr == nil || expr.Or == nil {
+		return nil
+	}
+	or := expr.Or
+	if or.And == nil || len(or.Rest) > 0 {
+		return nil
+	}
+	and := or.And
+	if and.Not == nil || len(and.Rest) > 0 {
+		return nil
+	}
+	not := and.Not
+	if not.Not || not.Comparison == nil {
+		return nil
+	}
+	cmp := not.Comparison
+	if cmp.Addition == nil || cmp.Rest != nil || cmp.IsNull != nil {
+		return nil
+	}
+	add := cmp.Addition
+	if add.Multiplication == nil || len(add.Rest) > 0 {
+		return nil
+	}
+	mul := add.Multiplication
+	if mul.Unary == nil || len(mul.Rest) > 0 {
+		return nil
+	}
+	un := mul.Unary
+	if un.Op != "" || un.Primary == nil {
+		return nil
+	}
+	prim := un.Primary
+	if prim.Literal == nil {
+		return nil
+	}
+	return prim.Literal.StringValue
+}
+
+// expressionWithSubstitutedDatabaseMacro returns a deep-copy of expr
+// down to the StringValue with `{database}` replaced. Only the chain
+// down to the literal is copied — everything else is shared. If expr
+// isn't a bare string literal, the original pointer is returned.
+func expressionWithSubstitutedDatabaseMacro(expr *parser.Expression, dbName string) *parser.Expression {
+	original := engineExprStringLiteral(expr)
+	if original == nil || !strings.Contains(*original, "{database}") {
+		return expr
+	}
+	substituted := strings.ReplaceAll(*original, "{database}", dbName)
+
+	// Deep-copy the chain so we don't mutate the parsed AST that
+	// other callers may still hold pointers into.
+	newExpr := *expr
+	or := *expr.Or
+	and := *or.And
+	not := *and.Not
+	cmp := *not.Comparison
+	add := *cmp.Addition
+	mul := *add.Multiplication
+	un := *mul.Unary
+	prim := *un.Primary
+	lit := *prim.Literal
+	lit.StringValue = &substituted
+	prim.Literal = &lit
+	un.Primary = &prim
+	mul.Unary = &un
+	add.Multiplication = &mul
+	cmp.Addition = &add
+	not.Comparison = &cmp
+	and.Not = &not
+	or.And = &and
+	newExpr.Or = &or
+	return &newExpr
 }
 
 // isMergeTreeFamily reports whether name is a *MergeTree-family engine
