@@ -134,8 +134,14 @@ func (t *TableInfo) Equal(other *TableInfo) bool {
 		return false
 	}
 
-	// Compare AST fields
-	if !enginesEqual(t.Engine, other.Engine) ||
+	// Compare AST fields. `{database}` macros in engine parameters are
+	// substituted to the table's actual database name on both sides
+	// before comparing — source carries the macro literal; live carries
+	// the substituted form; without normalization every {database}-using
+	// Replicated*MergeTree would falsely diff as drift.
+	tEng := substituteDatabaseMacro(t.Engine, t.Database)
+	otherEng := substituteDatabaseMacro(other.Engine, other.Database)
+	if !enginesEqual(tEng, otherEng) ||
 		!equalAST(t.OrderBy, other.OrderBy) ||
 		!equalAST(t.PartitionBy, other.PartitionBy) ||
 		!equalAST(t.PrimaryKey, other.PrimaryKey) ||
@@ -258,6 +264,49 @@ func (c ColumnInfo) Equal(other ColumnInfo) bool {
 		equalAST(c.Default, other.Default) &&
 		equalAST(c.Codec, other.Codec) &&
 		equalAST(c.TTL, other.TTL)
+}
+
+// substituteDatabaseMacro returns a copy of eng with the `{database}`
+// macro substituted to dbName in any String engine parameter. ClickHouse
+// resolves `{database}` to the table's database at table-creation time,
+// so the live `SHOW CREATE TABLE` output (and therefore housekeeper's
+// dumped current state) carries the substituted form, while source DDL
+// continues to carry the macro literal. Without this normalization,
+// every Replicated*MergeTree table whose source uses the `{database}`
+// macro would diff as drift on every plan — a spurious DROP+CREATE
+// proposal on each run, indistinguishable from a real keeper-path
+// change. dbName == "" is a no-op (e.g. when target.Database is empty,
+// which means the table didn't carry a database qualifier in source).
+//
+// Other CH macros (`{shard}`, `{replica}`, `{cluster}`) are NOT
+// substituted here: those resolve from server config (macros.xml),
+// and live SHOW CREATE preserves them verbatim — no normalization is
+// needed for them. `{cluster}` is handled separately by
+// inferSchemaCluster's reverse-rewrite path.
+func substituteDatabaseMacro(eng *parser.TableEngine, dbName string) *parser.TableEngine {
+	if eng == nil || dbName == "" {
+		return eng
+	}
+	needsCopy := false
+	for i := range eng.Parameters {
+		if s := eng.Parameters[i].String; s != nil && strings.Contains(*s, "{database}") {
+			needsCopy = true
+			break
+		}
+	}
+	if !needsCopy {
+		return eng
+	}
+	out := *eng
+	out.Parameters = make([]parser.EngineParameter, len(eng.Parameters))
+	for i, p := range eng.Parameters {
+		out.Parameters[i] = p
+		if p.String != nil && strings.Contains(*p.String, "{database}") {
+			substituted := strings.ReplaceAll(*p.String, "{database}", dbName)
+			out.Parameters[i].String = &substituted
+		}
+	}
+	return &out
 }
 
 // isMergeTreeFamily reports whether name is a *MergeTree-family engine
@@ -1561,12 +1610,15 @@ func handleTableExists(tableName string, currentTable, targetTable *TableInfo) (
 //
 // This function checks for these conditions and returns true if DROP+CREATE is necessary.
 func shouldUseDropCreate(currentTable, targetTable *TableInfo) bool {
-	// For integration engines or engine changes that require DROP+CREATE, use DROP+CREATE strategy
-	// Integration engines are read-only from ClickHouse perspective and modifications require recreating the table
-	// ReplicatedMergeTree parameter changes also require DROP+CREATE as they cannot be altered
-	return isIntegrationEngine(currentTable.Engine) ||
-		isIntegrationEngine(targetTable.Engine) ||
-		requiresDropCreate(currentTable.Engine, targetTable.Engine)
+	if isIntegrationEngine(currentTable.Engine) || isIntegrationEngine(targetTable.Engine) {
+		return true
+	}
+	// Substitute {database} macros on both sides before the
+	// parameter-equality check so source's macro literal compares
+	// equal to live's substituted form.
+	cur := substituteDatabaseMacro(currentTable.Engine, currentTable.Database)
+	tgt := substituteDatabaseMacro(targetTable.Engine, targetTable.Database)
+	return requiresDropCreate(cur, tgt)
 }
 
 // createRenameDiff creates a TableDiff for rename operation
@@ -1602,7 +1654,9 @@ func createCreateDiff(tableName string, targetTable *TableInfo) *TableDiff {
 // createDropCreateDiff creates a TableDiff for DROP+CREATE operation
 func createDropCreateDiff(tableName string, currentTable, targetTable *TableInfo) *TableDiff {
 	reason := "integration engine"
-	if requiresDropCreate(currentTable.Engine, targetTable.Engine) {
+	cur := substituteDatabaseMacro(currentTable.Engine, currentTable.Database)
+	tgt := substituteDatabaseMacro(targetTable.Engine, targetTable.Database)
+	if requiresDropCreate(cur, tgt) {
 		reason = "engine parameter change"
 	}
 
