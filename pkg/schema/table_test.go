@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pseudomuto/housekeeper/pkg/parser"
@@ -423,6 +424,127 @@ func TestTableEqualWithDatabaseMacro(t *testing.T) {
 	) ORDER BY event_id;`)
 	require.False(t, source.Equal(mismatched),
 		"macro source must still detect drift against a different live keeper path")
+}
+
+// TestSubstituteDatabaseMacroRealEngineShapes pins the
+// substitution against every engine-declaration shape used by the
+// downstream Forjeron consumer's production DDL. The
+// substituteDatabaseMacro helper walks a fixed Expression →
+// PrimaryExpression → Literal.StringValue chain — if a future
+// parser change reshapes any level (adds an alternative, splits a
+// rest-list, etc.), the walk would silently return the original
+// pointer and substitution becomes a no-op. The
+// TestSubstituteDatabaseMacroExpressionPath above already pins one
+// shape; this test adds the others, including the Replicated*MergeTree
+// + version-column form (3 args), the bare ReplicatedMergeTree (2
+// args), and the Replicated*MergeTree-without-database-segment form
+// (uses the macro elsewhere in the path).
+//
+// Each case parses real-shape DDL via parser.ParseString, runs
+// substituteDatabaseMacro, and asserts BOTH that {database} is gone
+// AND that the substituted form contains the database name. The
+// double assertion catches a silent-no-op regression: if the walk
+// fails to descend, the macro stays in place; the substituted form
+// stays unchanged.
+func TestSubstituteDatabaseMacroRealEngineShapes(t *testing.T) {
+	cases := []struct {
+		name   string
+		ddl    string
+		dbName string
+	}{
+		{
+			name: "ReplicatedReplacingMergeTree, 2 args (audit_log shape)",
+			ddl: `CREATE TABLE forjeron.audit_log (
+				id UUID,
+				created_at DateTime
+			) ENGINE = ReplicatedReplacingMergeTree(
+				'/clickhouse/tables/{shard}/{database}/audit_log',
+				'{replica}'
+			) ORDER BY id;`,
+			dbName: "forjeron",
+		},
+		{
+			name: "ReplicatedReplacingMergeTree, 3 args with version column (events_archive shape)",
+			ddl: `CREATE TABLE notify.events_archive (
+				id UUID,
+				_cdc_version UInt64
+			) ENGINE = ReplicatedReplacingMergeTree(
+				'/clickhouse/tables/{shard}/{database}/events_archive',
+				'{replica}',
+				_cdc_version
+			) ORDER BY id;`,
+			dbName: "notify",
+		},
+		{
+			name: "ReplicatedMergeTree, 2 args (repo_operations shape with literal forjeron)",
+			ddl: `CREATE TABLE forjeron.repo_operations (
+				op_id String,
+				timestamp DateTime
+			) ENGINE = ReplicatedMergeTree(
+				'/clickhouse/tables/{shard}/forjeron/repo_operations',
+				'{replica}'
+			) ORDER BY op_id;`,
+			dbName: "forjeron",
+		},
+		{
+			name: "ReplicatedReplacingMergeTree on a per-test-database (testutil-rewrite shape)",
+			ddl: `CREATE TABLE notify_t_abc12345.events_archive (
+				id UUID,
+				_cdc_version UInt64
+			) ENGINE = ReplicatedReplacingMergeTree(
+				'/clickhouse/tables/{shard}/{database}/events_archive',
+				'{replica}',
+				_cdc_version
+			) ORDER BY id;`,
+			dbName: "notify_t_abc12345",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sql, err := parser.ParseString(tc.ddl)
+			require.NoError(t, err)
+			require.NotEmpty(t, sql.Statements)
+
+			tables, err := extractTablesFromSQL(sql)
+			require.NoError(t, err)
+			require.Len(t, tables, 1)
+
+			var ti *TableInfo
+			for _, v := range tables {
+				ti = v
+			}
+			require.NotNil(t, ti)
+			require.NotNil(t, ti.Engine)
+
+			// Original engine MUST contain {database} for the test to
+			// be meaningful (literal-form cases without the macro
+			// don't exercise the substitution path).
+			origStr := ti.Engine.String()
+			if !strings.Contains(origStr, "{database}") {
+				// The literal-form case is interesting for a
+				// different reason: substitution should be a no-op
+				// AND return the SAME pointer (no-copy fast path).
+				out := substituteDatabaseMacro(ti.Engine, tc.dbName)
+				require.Same(t, ti.Engine, out, "literal-form engine should bypass the copy path")
+				return
+			}
+
+			out := substituteDatabaseMacro(ti.Engine, tc.dbName)
+			require.NotSame(t, ti.Engine, out,
+				"engine with {database} macro must be copied, not returned in-place")
+
+			outStr := out.String()
+			require.NotContains(t, outStr, "{database}",
+				"substituted engine still contains {database} — AST walk failed silently")
+			require.Contains(t, outStr, tc.dbName,
+				"substituted engine doesn't carry the database name — substitution didn't reach the StringValue")
+
+			// Original AST must remain intact (other callers may hold pointers).
+			require.Equal(t, origStr, ti.Engine.String(),
+				"original engine was mutated; substitution must deep-copy")
+		})
+	}
 }
 
 func TestIsMergeTreeFamily(t *testing.T) {
