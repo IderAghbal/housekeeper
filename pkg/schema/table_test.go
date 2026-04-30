@@ -329,53 +329,98 @@ func TestSubstituteDatabaseMacro(t *testing.T) {
 	})
 }
 
+// TestSubstituteDatabaseMacroExpressionPath pins the parser's actual
+// shape: engine string-literal parameters ('{database}', etc.) are
+// emitted into the Expression slot — not the bare String slot — so
+// the substitution must walk the Expression AST down to the
+// StringValue. Without this path the function is a no-op for the
+// real shapes that come out of ParseString.
+func TestSubstituteDatabaseMacroExpressionPath(t *testing.T) {
+	ddl := `CREATE TABLE forjeron.audit_chain (
+		org_id UUID,
+		computed_at DateTime64(6, 'UTC')
+	) ENGINE = ReplicatedReplacingMergeTree(
+		'/clickhouse/tables/{shard}/{database}/audit_chain',
+		'{replica}',
+		computed_at
+	) ORDER BY org_id;`
+	srcSQL, err := parser.ParseString(ddl)
+	require.NoError(t, err)
+	require.NotEmpty(t, srcSQL.Statements)
+	srcEng := srcSQL.Statements[0].CreateTable.Engine
+	require.NotNil(t, srcEng)
+	require.Len(t, srcEng.Parameters, 3)
+	// Sanity check: parser put the string into the Expression slot.
+	require.NotNil(t, srcEng.Parameters[0].Expression, "parser must populate Expression for engine string literals")
+	require.Nil(t, srcEng.Parameters[0].String, "parser does not populate the bare String slot for engine string literals")
+
+	out := substituteDatabaseMacro(srcEng, "forjeron")
+	require.NotSame(t, srcEng, out, "engine with macro must be copied, not returned in-place")
+
+	got := engineExprStringLiteral(out.Parameters[0].Expression)
+	require.NotNil(t, got)
+	require.Equal(t, "'/clickhouse/tables/{shard}/forjeron/audit_chain'", *got)
+
+	// {replica} must NOT be substituted.
+	rep := engineExprStringLiteral(out.Parameters[1].Expression)
+	require.NotNil(t, rep)
+	require.Equal(t, "'{replica}'", *rep)
+
+	// Original AST untouched.
+	srcGot := engineExprStringLiteral(srcEng.Parameters[0].Expression)
+	require.NotNil(t, srcGot)
+	require.Equal(t, "'/clickhouse/tables/{shard}/{database}/audit_chain'", *srcGot,
+		"source AST must remain unmutated after substitution")
+}
+
 // TestTableEqualWithDatabaseMacro pins that source carrying the
 // `{database}` macro and live carrying the substituted form are
 // considered equal — the integration of substituteDatabaseMacro into
-// TableInfo.Equal.
+// TableInfo.Equal. The TableInfos are built from real parsed DDL so
+// the engine parameters land in the Expression slot (the parser's
+// actual shape), exercising the full substitution path including
+// the deep AST walk.
 func TestTableEqualWithDatabaseMacro(t *testing.T) {
-	source := &TableInfo{
-		Name:     "audit_log",
-		Database: "forjeron",
-		Engine: &parser.TableEngine{
-			Name: "ReplicatedReplacingMergeTree",
-			Parameters: []parser.EngineParameter{
-				{String: stringPtr("'/clickhouse/tables/{shard}/{database}/audit_log'")},
-				{String: stringPtr("'{replica}'")},
-			},
-		},
+	parseTable := func(ddl string) *TableInfo {
+		t.Helper()
+		sql, err := parser.ParseString(ddl)
+		require.NoError(t, err)
+		require.NotEmpty(t, sql.Statements)
+		tables, err := extractTablesFromSQL(sql)
+		require.NoError(t, err)
+		require.Len(t, tables, 1)
+		for _, ti := range tables {
+			return ti
+		}
+		return nil
 	}
-	live := &TableInfo{
-		Name:     "audit_log",
-		Database: "forjeron",
-		Engine: &parser.TableEngine{
-			Name: "ReplicatedReplacingMergeTree",
-			Parameters: []parser.EngineParameter{
-				{String: stringPtr("'/clickhouse/tables/{shard}/forjeron/audit_log'")},
-				{String: stringPtr("'{replica}'")},
-			},
-		},
-	}
+
+	source := parseTable(`CREATE TABLE forjeron.audit_log (
+		event_id UUID,
+		created_at DateTime64(6, 'UTC')
+	) ENGINE = ReplicatedReplacingMergeTree(
+		'/clickhouse/tables/{shard}/{database}/audit_log',
+		'{replica}'
+	) ORDER BY event_id;`)
+	live := parseTable(`CREATE TABLE forjeron.audit_log (
+		event_id UUID,
+		created_at DateTime64(6, 'UTC')
+	) ENGINE = ReplicatedReplacingMergeTree(
+		'/clickhouse/tables/{shard}/forjeron/audit_log',
+		'{replica}'
+	) ORDER BY event_id;`)
 	require.True(t, source.Equal(live),
 		"macro source must equal substituted live form for the same database")
 
-	// Negative control: if the live form has a different database, they
-	// must NOT be equal even after substitution (substitution is per-
-	// table; both sides resolve against their own Database, which is
-	// the same field for the same table — and renames go through a
-	// separate code path).
-	source.Database = "forjeron"
-	mismatched := &TableInfo{
-		Name:     "audit_log",
-		Database: "forjeron",
-		Engine: &parser.TableEngine{
-			Name: "ReplicatedReplacingMergeTree",
-			Parameters: []parser.EngineParameter{
-				{String: stringPtr("'/clickhouse/tables/{shard}/wrong_db/audit_log'")},
-				{String: stringPtr("'{replica}'")},
-			},
-		},
-	}
+	// Negative control: a live keeper path that does NOT match the
+	// substituted source must still be flagged as drift.
+	mismatched := parseTable(`CREATE TABLE forjeron.audit_log (
+		event_id UUID,
+		created_at DateTime64(6, 'UTC')
+	) ENGINE = ReplicatedReplacingMergeTree(
+		'/clickhouse/tables/{shard}/wrong_db/audit_log',
+		'{replica}'
+	) ORDER BY event_id;`)
 	require.False(t, source.Equal(mismatched),
 		"macro source must still detect drift against a different live keeper path")
 }
