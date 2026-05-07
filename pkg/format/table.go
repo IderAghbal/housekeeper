@@ -249,11 +249,16 @@ func (f *Formatter) formatTableClauseType(clause *parser.TableClause) string {
 		return f.keyword("SAMPLE BY") + " " + f.formatExpression(&clause.SampleBy.Expression)
 	}
 	if clause.TTL != nil {
-		out := f.keyword("TTL") + " " + f.formatExpression(&clause.TTL.Expression)
-		if action := f.formatTTLAction(clause.TTL.Action); action != "" {
-			out += " " + action
+		entries := make([]string, 0, len(clause.TTL.Entries))
+		for i := range clause.TTL.Entries {
+			entry := &clause.TTL.Entries[i]
+			s := f.formatExpression(&entry.Expression)
+			if action := f.formatTTLAction(entry.Action); action != "" {
+				s += " " + action
+			}
+			entries = append(entries, s)
 		}
-		return out
+		return f.keyword("TTL") + " " + strings.Join(entries, ", ")
 	}
 	if clause.Settings != nil && len(clause.Settings.Settings) > 0 {
 		return f.formatTableSettings(clause.Settings)
@@ -855,23 +860,20 @@ func (f *Formatter) formatDropConstraint(op *parser.DropConstraintOperation) str
 
 // formatModifyTTL formats MODIFY TTL operations
 func (f *Formatter) formatModifyTTL(op *parser.ModifyTTLOperation) string {
-	if op == nil {
+	if op == nil || len(op.Entries) == 0 {
 		return ""
 	}
 
-	var parts []string
-	parts = append(parts, f.keyword("MODIFY TTL"))
-	parts = append(parts, f.formatExpression(&op.Expression))
-
-	if op.Delete != nil {
-		parts = append(parts, f.keyword("DELETE"))
-		if op.Delete.Where != nil {
-			parts = append(parts, f.keyword("WHERE"))
-			parts = append(parts, f.formatExpression(op.Delete.Where))
+	entries := make([]string, 0, len(op.Entries))
+	for i := range op.Entries {
+		entry := &op.Entries[i]
+		s := f.formatExpression(&entry.Expression)
+		if action := f.formatTTLAction(entry.Action); action != "" {
+			s += " " + action
 		}
+		entries = append(entries, s)
 	}
-
-	return strings.Join(parts, " ")
+	return f.keyword("MODIFY TTL") + " " + strings.Join(entries, ", ")
 }
 
 // formatDeleteTTL formats DELETE TTL operations

@@ -49,7 +49,7 @@ type (
 		PartitionBy   *parser.Expression  // PARTITION BY expression AST
 		PrimaryKey    *parser.Expression  // PRIMARY KEY expression AST
 		SampleBy      *parser.Expression  // SAMPLE BY expression AST
-		TTL           *parser.Expression  // Table-level TTL expression AST
+		TTL           *parser.TableTTLClause // Table-level TTL clause (one or more entries)
 		Settings      map[string]string   // Table settings
 		Columns       []ColumnInfo        // Column definitions
 		OrReplace     bool                // Whether CREATE OR REPLACE was used
@@ -483,7 +483,7 @@ func extractTablesFromSQL(sql *parser.SQL) (map[string]*TableInfo, error) {
 				tableInfo.SampleBy = &sampleBy.Expression
 			}
 			if ttl := table.GetTTL(); ttl != nil {
-				tableInfo.TTL = &ttl.Expression
+				tableInfo.TTL = ttl
 			}
 			if settings := table.GetSettings(); settings != nil {
 				settingMap := make(map[string]string)

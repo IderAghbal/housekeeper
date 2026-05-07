@@ -112,6 +112,11 @@ func TestCreateTable(t *testing.T) {
 		{name: "ttl_to_volume", sql: `CREATE TABLE tiered_events (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id TTL ts + INTERVAL 1 WEEK TO VOLUME 'archive';`},
 		{name: "ttl_recompress", sql: `CREATE TABLE compressed_events (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id TTL ts + INTERVAL 1 DAY RECOMPRESS CODEC(ZSTD(9));`},
 
+		// Multi-action TTL: a single TTL clause with two or more
+		// comma-separated entries. ClickHouse evaluates each per-row.
+		{name: "ttl_multi_action_move_then_delete", sql: `CREATE TABLE tiered_audit (id UInt64, ts DateTime, retention_days UInt16) ENGINE = MergeTree() ORDER BY id TTL ts + INTERVAL 90 DAY TO VOLUME 'cold', ts + toIntervalDay(retention_days) DELETE;`},
+		{name: "ttl_multi_action_three_entries", sql: `CREATE TABLE staged_logs (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id TTL ts + INTERVAL 7 DAY RECOMPRESS CODEC(ZSTD(3)), ts + INTERVAL 30 DAY TO VOLUME 'cold', ts + INTERVAL 1 YEAR DELETE;`},
+
 		// CREATE TABLE AS with table functions
 		{name: "as_remote", sql: `CREATE TABLE remote_copy AS remote('host:9000', 'db', 'table') ENGINE = MergeTree() ORDER BY id;`},
 		{name: "as_cluster", sql: `CREATE TABLE cluster_data AS cluster('my_cluster', 'default', 'events') ENGINE = MergeTree() ORDER BY id;`},
@@ -154,6 +159,7 @@ func TestAlterTable(t *testing.T) {
 
 		// TTL operations
 		{name: "modify_ttl", sql: `ALTER TABLE analytics.events MODIFY TTL timestamp + days(30);`},
+		{name: "modify_ttl_multi_action", sql: `ALTER TABLE analytics.events MODIFY TTL ts + INTERVAL 90 DAY TO VOLUME 'cold', ts + INTERVAL 1 YEAR DELETE;`},
 		{name: "delete_ttl", sql: `ALTER TABLE analytics.events DELETE TTL;`},
 
 		// Structure operations
