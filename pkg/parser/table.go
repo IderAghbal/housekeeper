@@ -70,17 +70,45 @@ type (
 		Semicolon bool `parser:"';'"`
 	}
 
-	// TableClause represents any clause that can appear after ENGINE in a CREATE TABLE statement
-	// This allows clauses to be specified in any order
+	// TableClause represents any clause that can appear after ENGINE in
+	// a CREATE TABLE statement. Clauses can appear in any order.
+	//
+	// `Comment` is a participle-only alternative: when a comment appears
+	// between two table-level clauses (e.g. between PARTITION BY and
+	// TTL), the parser produces a TableClause whose only populated field
+	// is `Comment`. A post-parse normalizer (normalizeClauseComments,
+	// invoked from ParseString / Parse) walks the Clauses slice, merges
+	// these comment-only entries into the LeadingComments of the next
+	// real clause, and drops them from the slice — so consumers see a
+	// stable [TableClause] where each entry has at most one of OrderBy
+	// / PartitionBy / etc. populated and any preceding comments live on
+	// LeadingComments.
+	//
+	// Comment-as-alternative (rather than `LeadingComments []string @(Comment)*`
+	// as a shared optional prefix) is required because participle's
+	// alternative selection in a `@@*` repetition cannot disambiguate
+	// when multiple alternatives share the same optional comment prefix
+	// — every alternative looks identical at the prefix lookahead, the
+	// repetition stalls, and the Clauses slice ends prematurely. Making
+	// the comment its own first-class alternative gives participle a
+	// distinct token (Comment vs a clause keyword) to dispatch on.
 	TableClause struct {
-		LeadingComments  []string             `parser:"@(Comment | MultilineComment)*"`
-		OrderBy          *OrderByClause       `parser:"@@"`
-		PartitionBy      *PartitionByClause   `parser:"| @@"`
-		PrimaryKey       *PrimaryKeyClause    `parser:"| @@"`
-		SampleBy         *SampleByClause      `parser:"| @@"`
-		TTL              *TableTTLClause      `parser:"| @@"`
-		Settings         *TableSettingsClause `parser:"| @@"`
-		TrailingComments []string             `parser:"@(Comment | MultilineComment)*"`
+		// LeadingComments is populated by normalizeClauseComments
+		// from preceding Comment-only entries in the Clauses slice.
+		// Not part of the participle grammar — a `[]string @(Comment)*`
+		// prefix here would compete with the Comment alternative
+		// below, and participle's lookahead can't disambiguate when
+		// many comments stack between two clauses (it needs to see
+		// past every comment to identify the next clause keyword,
+		// which exceeds UseLookahead bounds for runs of 5+ comments).
+		LeadingComments []string             `parser:""`
+		OrderBy         *OrderByClause       `parser:"  @@"`
+		PartitionBy     *PartitionByClause   `parser:"| @@"`
+		PrimaryKey      *PrimaryKeyClause    `parser:"| @@"`
+		SampleBy        *SampleByClause      `parser:"| @@"`
+		TTL             *TableTTLClause      `parser:"| @@"`
+		Settings        *TableSettingsClause `parser:"| @@"`
+		Comment         *string              `parser:"| @(Comment | MultilineComment)"`
 	}
 
 	// TableElement represents an element within table definition (column, index, constraint, or projection)

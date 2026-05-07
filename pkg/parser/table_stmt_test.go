@@ -106,6 +106,36 @@ func TestCreateTable(t *testing.T) {
 		{name: "as_on_cluster", sql: `CREATE TABLE events_distributed ON CLUSTER production AS events_local ENGINE = Distributed(production, currentDatabase(), events_local, rand());`},
 		{name: "as_full_options", sql: `CREATE OR REPLACE TABLE IF NOT EXISTS analytics.events_all ON CLUSTER analytics_cluster AS analytics.events_local ENGINE = Distributed(analytics_cluster, analytics, events_local, cityHash64(user_id)) SETTINGS index_granularity = 8192 COMMENT 'Distributed view of events_local';`},
 
+		// Comments between table-level clauses (between ORDER BY,
+		// PARTITION BY, TTL, SETTINGS). Parser must attach them as
+		// LeadingComments on the *next* clause, not greedily as
+		// TrailingComments of the previous one — otherwise the
+		// CreateTableStmt parser stops iterating Clauses early and
+		// fails with "unexpected token" on the next keyword.
+		{name: "comment_between_orderby_and_partition", sql: `CREATE TABLE t (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id
+-- partition by month so retention drops by partition
+PARTITION BY toYYYYMM(ts);`},
+		{name: "comment_between_partition_and_ttl", sql: `CREATE TABLE t (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id PARTITION BY toYYYYMM(ts)
+-- delete after a year
+TTL ts + INTERVAL 1 YEAR;`},
+		{name: "comment_between_ttl_and_settings", sql: `CREATE TABLE t (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id TTL ts + INTERVAL 1 YEAR
+-- index every 8192 rows
+SETTINGS index_granularity = 8192;`},
+		// Long comment runs (>UseLookahead bound). With LeadingComments
+		// as a participle prefix on TableClause, this would fail because
+		// the parser can't see past the comments to identify the next
+		// clause keyword. Comment-as-alternative dispatches one comment
+		// per iteration and tolerates arbitrary run lengths.
+		{name: "comment_long_run_between_clauses", sql: `CREATE TABLE t (id UInt64, ts DateTime) ENGINE = MergeTree() ORDER BY id PARTITION BY toYYYYMM(ts)
+-- comment line 1
+-- comment line 2
+-- comment line 3
+-- comment line 4
+-- comment line 5
+-- comment line 6
+TTL ts + INTERVAL 1 YEAR
+SETTINGS index_granularity = 8192;`},
+
 		// CREATE TABLE AS with table functions
 		{name: "as_remote", sql: `CREATE TABLE remote_copy AS remote('host:9000', 'db', 'table') ENGINE = MergeTree() ORDER BY id;`},
 		{name: "as_cluster", sql: `CREATE TABLE cluster_data AS cluster('my_cluster', 'default', 'events') ENGINE = MergeTree() ORDER BY id;`},
