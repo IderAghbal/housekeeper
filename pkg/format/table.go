@@ -169,21 +169,15 @@ func (f *Formatter) appendEngineAndClauses(lines []string, stmt *parser.CreateTa
 	return lines
 }
 
-// appendTableClause appends a single table clause with its comments
+// appendTableClause appends a single table clause with its leading
+// comments. Trailing comments are not part of TableClause's grammar
+// (see comment in pkg/parser/table.go) — comments between clauses
+// always attach to the next clause's LeadingComments.
 func (f *Formatter) appendTableClause(lines []string, clause *parser.TableClause) []string {
-	// Leading comments for the clause
 	if len(clause.LeadingComments) > 0 {
 		lines = append(lines, clause.LeadingComments...)
 	}
-
-	// Format the clause itself
 	lines = append(lines, f.formatTableClauseType(clause))
-
-	// Trailing comments for the clause
-	if len(clause.TrailingComments) > 0 {
-		lines = append(lines, clause.TrailingComments...)
-	}
-
 	return lines
 }
 

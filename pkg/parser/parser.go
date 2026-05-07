@@ -115,6 +115,62 @@ func normalizeImplicitAliases(sql string) string {
 	return result
 }
 
+// normalizeClauseComments collapses comment-only TableClause entries
+// into the LeadingComments of the next non-comment clause.
+//
+// The grammar lets a comment between two table-level clauses surface
+// as its own TableClause entry (with `Comment` set and every clause
+// pointer nil) — see the docstring on TableClause for why a participle
+// `LeadingComments` prefix can't disambiguate alternatives in the
+// `@@*` repetition. This normalizer reverses that: walks Clauses,
+// accumulates Comment-only entries, and attaches them as
+// LeadingComments to the next concrete clause. Comment-only entries
+// at the tail (no following clause) are left in place — the formatter
+// renders them as trailing comments before the next CreateTableStmt
+// element.
+func normalizeClauseComments(sql *SQL) {
+	if sql == nil {
+		return
+	}
+	for _, stmt := range sql.Statements {
+		if stmt == nil || stmt.CreateTable == nil {
+			continue
+		}
+		stmt.CreateTable.Clauses = mergeClauseComments(stmt.CreateTable.Clauses)
+	}
+}
+
+// mergeClauseComments returns a slice where each TableClause entry
+// has at most one populated clause field (OrderBy / PartitionBy /
+// PrimaryKey / SampleBy / TTL / Settings) and any preceding
+// comment-only entries are merged into LeadingComments. Trailing
+// comment-only entries (no following concrete clause) are dropped —
+// they'd otherwise produce TableClause values with no clause body
+// and confuse downstream sorting.
+func mergeClauseComments(in []TableClause) []TableClause {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]TableClause, 0, len(in))
+	var pending []string
+	for i := range in {
+		c := in[i]
+		if c.Comment != nil {
+			pending = append(pending, *c.Comment)
+			continue
+		}
+		if len(pending) > 0 {
+			c.LeadingComments = append(pending, c.LeadingComments...)
+			pending = nil
+		}
+		out = append(out, c)
+	}
+	// Trailing pending comments have no following clause to attach
+	// to. Drop them — the surrounding CreateTableStmt has its own
+	// TrailingCommentField slot for end-of-statement comments.
+	return out
+}
+
 // normalizeDataTypes walks through all statements and normalizes data types
 func normalizeDataTypes(sql *SQL) {
 	if sql == nil {
@@ -256,6 +312,10 @@ func Parse(reader io.Reader) (*SQL, error) {
 
 	// Normalize data types in all statements
 	normalizeDataTypes(sqlResult)
+
+	// Merge comment-only TableClause entries into the next clause's
+	// LeadingComments so consumers see a stable [TableClause].
+	normalizeClauseComments(sqlResult)
 
 	return sqlResult, nil
 }
