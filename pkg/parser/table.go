@@ -218,10 +218,29 @@ type (
 		Expression Expression `parser:"@@"`
 	}
 
-	// TableTTLClause represents table-level TTL expression
-	//   TTL expr [DELETE [WHERE expr] | TO DISK 'name' | TO VOLUME 'name' | RECOMPRESS CODEC(...)]
+	// TableTTLClause represents a table-level TTL expression with one or
+	// more comma-separated entries:
+	//
+	//   TTL expr1 [action1], expr2 [action2], ...
+	//
+	// where each action is one of:
+	//   DELETE [WHERE expr] | TO DISK 'name' | TO VOLUME 'name' | RECOMPRESS CODEC(...)
+	//
+	// Multi-action TTL lets a table declare both a tier-move policy and
+	// a deletion policy in a single clause — e.g.
+	//   TTL ts + INTERVAL 90 DAY TO VOLUME 'cold',
+	//       ts + INTERVAL 1 YEAR DELETE
+	// moves parts to the cold volume after 90 days and deletes them
+	// after a year. ClickHouse evaluates each entry per-row.
 	TableTTLClause struct {
-		TTL        string     `parser:"'TTL'"`
+		TTL     string          `parser:"'TTL'"`
+		Entries []TableTTLEntry `parser:"@@ (',' @@)*"`
+	}
+
+	// TableTTLEntry is one (expression, action) pair within a
+	// TableTTLClause. The action is optional; when omitted the row
+	// is deleted at expiry (ClickHouse's implicit default).
+	TableTTLEntry struct {
 		Expression Expression `parser:"@@"`
 		Action     *TTLAction `parser:"@@?"`
 	}
@@ -442,11 +461,13 @@ type (
 		Partition string `parser:"'PARTITION' @(String | Ident | BacktickIdent)"`
 	}
 
-	// ModifyTTLOperation represents MODIFY TTL operation
+	// ModifyTTLOperation represents MODIFY TTL operation. Mirrors the
+	// shape of TableTTLClause so multi-action ALTERs (e.g.
+	// MODIFY TTL ts+90d TO VOLUME 'cold', ts+ret_days DELETE)
+	// round-trip cleanly.
 	ModifyTTLOperation struct {
-		Modify     string     `parser:"'MODIFY' 'TTL'"`
-		Expression Expression `parser:"@@"`
-		Delete     *TTLDelete `parser:"@@?"`
+		Modify  string          `parser:"'MODIFY' 'TTL'"`
+		Entries []TableTTLEntry `parser:"@@ (',' @@)*"`
 	}
 
 	// TTLDelete represents DELETE clause in TTL
@@ -751,44 +772,116 @@ func (s *SampleByClause) Equal(other *SampleByClause) bool {
 	return s.Expression.Equal(&other.Expression)
 }
 
-// Equal compares two TableTTLClause instances for equality
+// String returns the SQL representation of the TTL clause's entries
+// (the comma-joined `expr [action]` list, no leading "TTL" keyword
+// — callers prefix as appropriate). Returns empty when there are
+// no entries.
+func (t *TableTTLClause) String() string {
+	if t == nil || len(t.Entries) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(t.Entries))
+	for i := range t.Entries {
+		parts = append(parts, t.Entries[i].String())
+	}
+	return strings.Join(parts, ", ")
+}
+
+// String returns the SQL representation of a single TTL entry.
+func (e *TableTTLEntry) String() string {
+	if e == nil {
+		return ""
+	}
+	out := e.Expression.String()
+	if action := e.Action.String(); action != "" {
+		out += " " + action
+	}
+	return out
+}
+
+// String returns the SQL keyword form of a TTL action, or empty
+// when the action is nil.
+func (a *TTLAction) String() string {
+	if a == nil {
+		return ""
+	}
+	// ToDisk / ToVolume include the surrounding quotes from @String.
+	switch {
+	case a.Delete != nil:
+		out := "DELETE"
+		if a.Delete.Where != nil {
+			out += " WHERE " + a.Delete.Where.String()
+		}
+		return out
+	case a.ToDisk != nil:
+		return "TO DISK " + *a.ToDisk
+	case a.ToVolume != nil:
+		return "TO VOLUME " + *a.ToVolume
+	case a.Recompress != nil:
+		return "RECOMPRESS " + a.Recompress.String()
+	}
+	return ""
+}
+
+// String returns the SQL representation of a RECOMPRESS action.
+func (r *TTLRecompress) String() string {
+	if r == nil {
+		return ""
+	}
+	return r.Codec.String()
+}
+
+// Equal compares two TableTTLClause instances for equality.
+// Entry order is significant — ClickHouse evaluates entries in
+// declaration order, so swapping entries can change semantics in
+// edge cases (e.g. a DELETE expression evaluated before a move
+// expression).
 func (t *TableTTLClause) Equal(other *TableTTLClause) bool {
 	if eq, done := compare.NilCheck(t, other); !done {
 		return eq
 	}
-	if !t.Expression.Equal(&other.Expression) {
-		return false
-	}
-	// Compare action clause
-	return compare.PointersWithEqual(t.Action, other.Action, (*TTLAction).Equal)
+	return compare.Slices(t.Entries, other.Entries, func(a, b TableTTLEntry) bool {
+		return a.Equal(&b)
+	})
 }
 
-// Equal compares two TTLAction instances for equality
-func (t *TTLAction) Equal(other *TTLAction) bool {
-	if eq, done := compare.NilCheck(t, other); !done {
+// Equal compares two TableTTLEntry instances for equality.
+func (e *TableTTLEntry) Equal(other *TableTTLEntry) bool {
+	if eq, done := compare.NilCheck(e, other); !done {
 		return eq
 	}
-	if !compare.PointersWithEqual(t.Delete, other.Delete, (*TTLDelete).Equal) {
+	if !e.Expression.Equal(&other.Expression) {
 		return false
 	}
-	if !compare.Pointers(t.ToDisk, other.ToDisk) {
-		return false
-	}
-	if !compare.Pointers(t.ToVolume, other.ToVolume) {
-		return false
-	}
-	return compare.PointersWithEqual(t.Recompress, other.Recompress, (*TTLRecompress).Equal)
+	return compare.PointersWithEqual(e.Action, other.Action, (*TTLAction).Equal)
 }
 
-// Equal compares two TTLRecompress instances for equality
-func (t *TTLRecompress) Equal(other *TTLRecompress) bool {
-	if eq, done := compare.NilCheck(t, other); !done {
+// Equal compares two TTLAction instances for equality.
+func (a *TTLAction) Equal(other *TTLAction) bool {
+	if eq, done := compare.NilCheck(a, other); !done {
 		return eq
 	}
-	return t.Codec.Equal(&other.Codec)
+	if !compare.PointersWithEqual(a.Delete, other.Delete, (*TTLDelete).Equal) {
+		return false
+	}
+	if !compare.Pointers(a.ToDisk, other.ToDisk) {
+		return false
+	}
+	if !compare.Pointers(a.ToVolume, other.ToVolume) {
+		return false
+	}
+	return compare.PointersWithEqual(a.Recompress, other.Recompress, (*TTLRecompress).Equal)
 }
 
-// Equal compares two TTLDelete instances for equality
+// Equal compares two TTLRecompress instances for equality.
+func (r *TTLRecompress) Equal(other *TTLRecompress) bool {
+	if eq, done := compare.NilCheck(r, other); !done {
+		return eq
+	}
+	return r.Codec.Equal(&other.Codec)
+}
+
+// Equal compares two TTLDelete instances for equality.
 func (t *TTLDelete) Equal(other *TTLDelete) bool {
 	if eq, done := compare.NilCheck(t, other); !done {
 		return eq

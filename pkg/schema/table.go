@@ -54,7 +54,7 @@ type (
 		PartitionBy   *parser.Expression     // PARTITION BY expression AST
 		PrimaryKey    *parser.Expression     // PRIMARY KEY expression AST
 		SampleBy      *parser.Expression     // SAMPLE BY expression AST
-		TTL           *parser.TableTTLClause // Table-level TTL clause AST (includes DELETE keyword)
+		TTL           *parser.TableTTLClause // Table-level TTL clause (one or more entries; each carries an optional action)
 		Settings      map[string]string      // Table settings
 		Columns       []ColumnInfo           // Column definitions
 		OrReplace     bool                   // Whether CREATE OR REPLACE was used
@@ -161,6 +161,10 @@ func (t *TableInfo) Equal(other *TableInfo) bool {
 // This handles:
 // 1. The equivalence between INTERVAL X UNIT and toIntervalUnit(X) syntax
 // 2. The DELETE keyword being the default action (TTL expr DELETE == TTL expr)
+//
+// Multi-action clauses are equal entry-by-entry in declaration order;
+// ClickHouse evaluates entries in order so reorderings can change
+// semantics, so we don't try to be order-insensitive.
 func ttlClausesEqual(a, b *parser.TableTTLClause) bool {
 	if a == nil && b == nil {
 		return true
@@ -168,13 +172,23 @@ func ttlClausesEqual(a, b *parser.TableTTLClause) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	// Compare expressions with interval normalization
+	if len(a.Entries) != len(b.Entries) {
+		return false
+	}
+	for i := range a.Entries {
+		if !ttlEntriesEqual(&a.Entries[i], &b.Entries[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// ttlEntriesEqual compares one TTL entry for semantic equality
+// (interval-normalized expression + action with bare-DELETE collapse).
+func ttlEntriesEqual(a, b *parser.TableTTLEntry) bool {
 	if !expressionsEqualWithIntervalNormalization(&a.Expression, &b.Expression) {
 		return false
 	}
-	// Compare action clauses with special handling for default DELETE action
-	// DELETE without WHERE is the default action, so a nil action and an
-	// explicit DELETE without WHERE are considered equal.
 	return ttlActionsEqual(a.Action, b.Action)
 }
 
@@ -1543,10 +1557,16 @@ func writeTableOptions(sql *strings.Builder, table *TableInfo) {
 		sql.WriteString("\nSAMPLE BY ")
 		sql.WriteString(table.SampleBy.String())
 	}
-	if table.TTL != nil {
+	if table.TTL != nil && len(table.TTL.Entries) > 0 {
 		sql.WriteString("\nTTL ")
-		sql.WriteString(table.TTL.Expression.String())
-		sql.WriteString(formatTTLAction(table.TTL.Action))
+		for i := range table.TTL.Entries {
+			if i > 0 {
+				sql.WriteString(", ")
+			}
+			entry := &table.TTL.Entries[i]
+			sql.WriteString(entry.Expression.String())
+			sql.WriteString(formatTTLAction(entry.Action))
+		}
 	}
 
 	// Settings

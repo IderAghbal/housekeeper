@@ -214,18 +214,24 @@ func FormatSQL(w io.Writer, opts FormatterOptions, sql *parser.SQL) error {
 	return Format(w, opts, sql.Statements...)
 }
 
-// FormatTTLClause formats a TableTTLClause to a string suitable for use in ALTER TABLE statements.
-// This returns the TTL expression and optional DELETE clause without the "TTL" keyword.
+// FormatTTLClause formats a TableTTLClause to a string suitable for use in
+// ALTER TABLE statements. Returns the comma-separated list of TTL entries
+// (each `expression [action]`) without the leading "TTL" keyword.
 func FormatTTLClause(ttl *parser.TableTTLClause) string {
-	if ttl == nil {
+	if ttl == nil || len(ttl.Entries) == 0 {
 		return ""
 	}
 	f := New(Defaults)
-	result := f.formatExpression(&ttl.Expression)
-	if action := f.formatTTLAction(ttl.Action); action != "" {
-		result += " " + action
+	parts := make([]string, 0, len(ttl.Entries))
+	for i := range ttl.Entries {
+		entry := &ttl.Entries[i]
+		s := f.formatExpression(&entry.Expression)
+		if action := f.formatTTLAction(entry.Action); action != "" {
+			s += " " + action
+		}
+		parts = append(parts, s)
 	}
-	return result
+	return strings.Join(parts, ", ")
 }
 
 // Format writes formatted SQL statements to the provided writer.
