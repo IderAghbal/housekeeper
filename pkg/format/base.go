@@ -56,8 +56,8 @@ func (d *DDLFormatter) buildDropStatement(objectType string, ifExists bool, name
 }
 
 // appendOnCluster appends ON CLUSTER clause if present.
-// Delegates to clusterName() so that macro references like '{cluster}' are emitted
-// verbatim while plain identifiers are backtick-quoted.
+// Delegates to clusterName() so cluster-name macros like '{cluster}'
+// pass through verbatim while plain identifiers get backtick-quoted.
 func (d *DDLFormatter) appendOnCluster(parts []string, cluster *string) []string {
 	if cluster != nil {
 		parts = append(parts, d.formatter.keyword("ON CLUSTER"))

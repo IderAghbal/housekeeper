@@ -256,8 +256,8 @@ func extractGrantInfo(sql *parser.SQL) []*GrantInfo {
 				if stmt.Grant.On != nil {
 					grant.OnTarget = formatGrantTarget(stmt.Grant.On)
 				}
-				if stmt.Grant.OnCluster != nil {
-					grant.Cluster = *stmt.Grant.OnCluster
+				if c := stmt.Grant.OnCluster(); c != nil {
+					grant.Cluster = *c
 				}
 				grants = append(grants, grant)
 			}

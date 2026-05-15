@@ -58,6 +58,17 @@ func TestGrantRole(t *testing.T) {
 		{name: "multiple", sql: `GRANT reader, writer TO alice, bob;`},
 		{name: "with_admin_option", sql: `GRANT developer TO lead WITH ADMIN OPTION;`},
 		{name: "privileges", sql: `GRANT SELECT ON *.* TO reader;`},
+		// ON CLUSTER in the ClickHouse-canonical leading position
+		// (immediately after GRANT). Formatter emits this position.
+		{name: "on_cluster_lead_ident", sql: `GRANT ON CLUSTER production SELECT ON analytics.* TO reader;`},
+		{name: "on_cluster_lead_backtick", sql: `GRANT ON CLUSTER ` + "`prod-cluster`" + ` SELECT ON analytics.* TO reader;`},
+		{name: "on_cluster_lead_macro", sql: `GRANT ON CLUSTER '{cluster}' INSERT ON forjeron.audit_log_local TO audit_writer;`},
+		{name: "on_cluster_lead_privilege_columns", sql: `GRANT ON CLUSTER staging SELECT(col1, col2) ON db.tbl TO analyst;`},
+		// ON CLUSTER in the trailing position (after the grantee
+		// list). ClickHouse accepts this too; the formatter
+		// normalizes it to the leading position.
+		{name: "on_cluster_trail_ident", sql: `GRANT SELECT ON analytics.* TO reader ON CLUSTER production;`},
+		{name: "on_cluster_trail_macro", sql: `GRANT INSERT ON forjeron.events TO writer ON CLUSTER '{cluster}';`},
 	}
 
 	runStatementTests(t, "role/grant", tests)
@@ -69,6 +80,9 @@ func TestRevokeRole(t *testing.T) {
 	tests := []statementTest{
 		{name: "basic", sql: `REVOKE admin FROM john;`},
 		{name: "multiple", sql: `REVOKE reader, writer FROM alice, bob;`},
+		{name: "on_cluster_lead", sql: `REVOKE ON CLUSTER staging INSERT ON db.tbl FROM writer;`},
+		{name: "on_cluster_lead_grant_option_for", sql: `REVOKE ON CLUSTER production GRANT OPTION FOR SELECT ON db.* FROM reader;`},
+		{name: "on_cluster_trail", sql: `REVOKE INSERT ON db.tbl FROM writer ON CLUSTER staging;`},
 	}
 
 	runStatementTests(t, "role/revoke", tests)
