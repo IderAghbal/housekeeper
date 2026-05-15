@@ -183,7 +183,7 @@ GRANT SELECT ON analytics.* TO analytics_reader;
 
 -- Generated migration (with cluster configured)
 CREATE ROLE IF NOT EXISTS `analytics_reader` ON CLUSTER `production`;
-GRANT `SELECT` ON `analytics`.* TO `analytics_reader` ON CLUSTER `production`;
+GRANT ON CLUSTER `production` `SELECT` ON `analytics`.* TO `analytics_reader`;
 ```
 
 Configure cluster support in `housekeeper.yaml`:

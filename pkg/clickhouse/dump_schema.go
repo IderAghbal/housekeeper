@@ -162,11 +162,13 @@ func injectOnCluster(statements []*parser.Statement, cluster string) []*parser.S
 			// Roles are cluster-wide by nature
 			stmt.CreateRole.OnCluster = clusterName
 		case stmt.Grant != nil:
-			// Grants are cluster-wide by nature
-			stmt.Grant.OnCluster = clusterName
+			// Grants are cluster-wide by nature; write to the
+			// canonical leading position.
+			stmt.Grant.LeadCluster = clusterName
 		case stmt.Revoke != nil:
-			// Revokes are cluster-wide by nature
-			stmt.Revoke.OnCluster = clusterName
+			// Revokes are cluster-wide by nature; write to the
+			// canonical leading position.
+			stmt.Revoke.LeadCluster = clusterName
 		}
 	}
 

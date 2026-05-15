@@ -8,6 +8,18 @@ import (
 	"github.com/pseudomuto/housekeeper/pkg/parser"
 )
 
+// clusterName formats a cluster name for ON CLUSTER clauses.
+// ClickHouse accepts a bare identifier, a back-ticked identifier, or
+// a quoted string. The parser strips backticks but preserves quoted
+// strings, so a leading single-quote signals a macro reference like
+// '{cluster}' that must be emitted as-is.
+func (f *Formatter) clusterName(name string) string {
+	if len(name) > 0 && name[0] == '\'' {
+		return name
+	}
+	return f.identifier(name)
+}
+
 // createRole formats a CREATE ROLE statement
 func (f *Formatter) createRole(w io.Writer, stmt *parser.CreateRoleStmt) error {
 	return f.formatWithComments(w, stmt, func(w io.Writer) error {
@@ -28,7 +40,7 @@ func (f *Formatter) createRole(w io.Writer, stmt *parser.CreateRoleStmt) error {
 
 		// ON CLUSTER
 		if stmt.OnCluster != nil {
-			parts = append(parts, f.keyword("ON CLUSTER"), f.identifier(*stmt.OnCluster))
+			parts = append(parts, f.keyword("ON CLUSTER"), f.clusterName(*stmt.OnCluster))
 		}
 
 		// SETTINGS
@@ -59,7 +71,7 @@ func (f *Formatter) alterRole(w io.Writer, stmt *parser.AlterRoleStmt) error {
 
 		// ON CLUSTER
 		if stmt.OnCluster != nil {
-			parts = append(parts, f.keyword("ON CLUSTER"), f.identifier(*stmt.OnCluster))
+			parts = append(parts, f.keyword("ON CLUSTER"), f.clusterName(*stmt.OnCluster))
 		}
 
 		// RENAME TO
@@ -151,32 +163,29 @@ func (f *Formatter) setDefaultRole(w io.Writer, stmt *parser.SetDefaultRoleStmt)
 	return err
 }
 
-// grant formats a GRANT statement
+// grant formats a GRANT statement. Always emits the canonical
+// ClickHouse position: ON CLUSTER immediately after GRANT, before
+// the privilege list. The parser accepts either position; the
+// formatter normalizes to canonical for predictable round-trip.
 func (f *Formatter) grant(w io.Writer, stmt *parser.GrantStmt) error {
 	return f.formatWithComments(w, stmt, func(w io.Writer) error {
 		var parts []string
 
-		// GRANT
 		parts = append(parts, f.keyword("GRANT"))
 
-		// Privileges
-		parts = append(parts, f.formatPrivilegeList(stmt.Privileges))
-
-		// ON CLUSTER
-		if stmt.OnCluster != nil {
-			parts = append(parts, f.keyword("ON CLUSTER"), f.identifier(*stmt.OnCluster))
+		if cluster := stmt.OnCluster(); cluster != nil {
+			parts = append(parts, f.keyword("ON CLUSTER"), f.clusterName(*cluster))
 		}
 
-		// ON target
+		parts = append(parts, f.formatPrivilegeList(stmt.Privileges))
+
 		if stmt.On != nil {
 			parts = append(parts, f.keyword("ON"), f.formatGrantTarget(stmt.On))
 		}
 
-		// TO grantees
 		parts = append(parts, f.keyword("TO"))
 		parts = append(parts, f.formatGranteeList(stmt.To))
 
-		// WITH options
 		if stmt.WithGrant {
 			parts = append(parts, f.keyword("WITH GRANT OPTION"))
 		}
@@ -192,15 +201,18 @@ func (f *Formatter) grant(w io.Writer, stmt *parser.GrantStmt) error {
 	})
 }
 
-// revoke formats a REVOKE statement
+// revoke formats a REVOKE statement. As with grant, emits the
+// canonical position: ON CLUSTER immediately after REVOKE.
 func (f *Formatter) revoke(w io.Writer, stmt *parser.RevokeStmt) error {
 	return f.formatWithComments(w, stmt, func(w io.Writer) error {
 		var parts []string
 
-		// REVOKE
 		parts = append(parts, f.keyword("REVOKE"))
 
-		// Options
+		if cluster := stmt.OnCluster(); cluster != nil {
+			parts = append(parts, f.keyword("ON CLUSTER"), f.clusterName(*cluster))
+		}
+
 		if stmt.GrantOption {
 			parts = append(parts, f.keyword("GRANT OPTION FOR"))
 		}
@@ -208,20 +220,12 @@ func (f *Formatter) revoke(w io.Writer, stmt *parser.RevokeStmt) error {
 			parts = append(parts, f.keyword("ADMIN OPTION FOR"))
 		}
 
-		// Privileges
 		parts = append(parts, f.formatPrivilegeList(stmt.Privileges))
 
-		// ON CLUSTER
-		if stmt.OnCluster != nil {
-			parts = append(parts, f.keyword("ON CLUSTER"), f.identifier(*stmt.OnCluster))
-		}
-
-		// ON target
 		if stmt.On != nil {
 			parts = append(parts, f.keyword("ON"), f.formatGrantTarget(stmt.On))
 		}
 
-		// FROM grantees
 		parts = append(parts, f.keyword("FROM"))
 		parts = append(parts, f.formatGranteeList(stmt.From))
 

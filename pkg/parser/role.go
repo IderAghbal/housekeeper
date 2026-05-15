@@ -60,31 +60,61 @@ type (
 		Semicolon bool      `parser:"';'"`
 	}
 
-	// GrantStmt represents GRANT statements
-	// Syntax: GRANT {privilege | role} [,...] [ON {database.table | *.*}] TO {user | role} [,...] [WITH GRANT OPTION];
+	// GrantStmt represents GRANT statements.
+	//
+	// ClickHouse syntax (https://clickhouse.com/docs/en/sql-reference/statements/grant):
+	//
+	//   GRANT [ON CLUSTER cluster_name]
+	//         privilege[(column_name [,...])] [,...]
+	//         ON {db.table[*]|db.*|*.*|table[*]|*}
+	//         TO {user | role | CURRENT_USER} [,...]
+	//         [WITH GRANT OPTION] [WITH REPLACE OPTION] [WITH ADMIN OPTION]
+	//
+	// ClickHouse accepts ON CLUSTER in two positions: the canonical
+	// leading slot (immediately after GRANT, before privileges) and a
+	// trailing slot (after the grantee list, before WITH). The
+	// previous grammar placed it between Privileges and the ON target,
+	// a third position ClickHouse rejects with a syntax error — so
+	// any DDL the old format emitted was invalid against a real
+	// cluster.
+	//
+	// This grammar parses either accepted position into LeadCluster
+	// or TrailCluster; call OnCluster() to get the effective value
+	// regardless of where it appeared.
+	//
+	// The cluster name may be an identifier, a back-ticked identifier,
+	// or a quoted string (the latter so `'{cluster}'` macros parse).
 	GrantStmt struct {
 		LeadingCommentField
-		Privileges  *PrivilegeList `parser:"'GRANT' @@"`
-		OnCluster   *string        `parser:"('ON' 'CLUSTER' @(Ident | BacktickIdent))?"`
-		On          *GrantTarget   `parser:"('ON' @@)?"`
-		To          *GranteeList   `parser:"'TO' @@"`
-		WithGrant   bool           `parser:"@('WITH' 'GRANT' 'OPTION')?"`
-		WithReplace bool           `parser:"@('WITH' 'REPLACE' 'OPTION')?"`
-		WithAdmin   bool           `parser:"@('WITH' 'ADMIN' 'OPTION')?"`
+		LeadCluster  *string        `parser:"'GRANT' ('ON' 'CLUSTER' @(Ident | BacktickIdent | String))?"`
+		Privileges   *PrivilegeList `parser:"@@"`
+		On           *GrantTarget   `parser:"('ON' @@)?"`
+		To           *GranteeList   `parser:"'TO' @@"`
+		TrailCluster *string        `parser:"('ON' 'CLUSTER' @(Ident | BacktickIdent | String))?"`
+		WithGrant    bool           `parser:"@('WITH' 'GRANT' 'OPTION')?"`
+		WithReplace  bool           `parser:"@('WITH' 'REPLACE' 'OPTION')?"`
+		WithAdmin    bool           `parser:"@('WITH' 'ADMIN' 'OPTION')?"`
 		TrailingCommentField
 		Semicolon bool `parser:"';'"`
 	}
 
-	// RevokeStmt represents REVOKE statements
-	// Syntax: REVOKE [GRANT OPTION FOR | ADMIN OPTION FOR] {privilege | role} [,...] [ON {database.table | *.*}] FROM {user | role} [,...];
+	// RevokeStmt represents REVOKE statements.
+	//
+	// ClickHouse syntax: REVOKE [ON CLUSTER cluster_name]
+	//   [GRANT OPTION FOR | ADMIN OPTION FOR] privilege[,...] ON ...
+	//   FROM {user|role|CURRENT_USER}[,...]
+	//
+	// As with GrantStmt, ON CLUSTER is accepted at the canonical
+	// leading position or trailing after the grantee list.
 	RevokeStmt struct {
 		LeadingCommentField
-		GrantOption bool           `parser:"'REVOKE' (@'GRANT' 'OPTION' 'FOR'"`
-		AdminOption bool           `parser:"| @'ADMIN' 'OPTION' 'FOR')?"`
-		Privileges  *PrivilegeList `parser:"@@"`
-		OnCluster   *string        `parser:"('ON' 'CLUSTER' @(Ident | BacktickIdent))?"`
-		On          *GrantTarget   `parser:"('ON' @@)?"`
-		From        *GranteeList   `parser:"'FROM' @@"`
+		LeadCluster  *string        `parser:"'REVOKE' ('ON' 'CLUSTER' @(Ident | BacktickIdent | String))?"`
+		GrantOption  bool           `parser:"(@'GRANT' 'OPTION' 'FOR'"`
+		AdminOption  bool           `parser:"| @'ADMIN' 'OPTION' 'FOR')?"`
+		Privileges   *PrivilegeList `parser:"@@"`
+		On           *GrantTarget   `parser:"('ON' @@)?"`
+		From         *GranteeList   `parser:"'FROM' @@"`
+		TrailCluster *string        `parser:"('ON' 'CLUSTER' @(Ident | BacktickIdent | String))?"`
 		TrailingCommentField
 		Semicolon bool `parser:"';'"`
 	}
@@ -138,3 +168,23 @@ type (
 		IsCurrent bool   `parser:"| @'CURRENT_USER'"`
 	}
 )
+
+// OnCluster returns the effective ON CLUSTER target regardless of
+// whether it was parsed in the leading or trailing position. nil
+// when neither was specified.
+func (g *GrantStmt) OnCluster() *string {
+	if g.LeadCluster != nil {
+		return g.LeadCluster
+	}
+	return g.TrailCluster
+}
+
+// OnCluster returns the effective ON CLUSTER target regardless of
+// whether it was parsed in the leading or trailing position. nil
+// when neither was specified.
+func (r *RevokeStmt) OnCluster() *string {
+	if r.LeadCluster != nil {
+		return r.LeadCluster
+	}
+	return r.TrailCluster
+}
