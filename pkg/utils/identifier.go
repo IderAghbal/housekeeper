@@ -184,3 +184,4 @@ func StripBackticks(s string) string {
 	// Remove all backticks
 	return strings.ReplaceAll(s, "`", "")
 }
+

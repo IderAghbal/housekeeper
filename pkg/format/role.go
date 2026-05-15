@@ -257,7 +257,12 @@ func (f *Formatter) formatRoleList(list *parser.RoleList) string {
 	return strings.Join(names, ", ")
 }
 
-// formatPrivilegeList formats a list of privileges
+// formatPrivilegeList formats a list of privileges. Privilege names
+// (SELECT, INSERT, ...) are emitted as bare keywords — backticking
+// them would turn them into identifiers and ClickHouse would reject
+// `GRANT \`SELECT\` ON ...` as a malformed role grant. Column
+// references inside privilege(col, ...) ARE identifiers and stay
+// backtick-quoted.
 func (f *Formatter) formatPrivilegeList(list *parser.PrivilegeList) string {
 	if list == nil || len(list.Items) == 0 {
 		return ""
@@ -272,9 +277,9 @@ func (f *Formatter) formatPrivilegeList(list *parser.PrivilegeList) string {
 			for j, col := range item.Columns {
 				cols[j] = f.identifier(col)
 			}
-			items[i] = fmt.Sprintf("%s(%s)", f.identifier(item.Name), strings.Join(cols, ", "))
+			items[i] = fmt.Sprintf("%s(%s)", f.keyword(item.Name), strings.Join(cols, ", "))
 		} else {
-			items[i] = f.identifier(item.Name)
+			items[i] = f.keyword(item.Name)
 		}
 	}
 	return strings.Join(items, ", ")

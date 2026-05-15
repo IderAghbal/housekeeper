@@ -1,1 +1,1 @@
-REVOKE ON CLUSTER `production` GRANT OPTION FOR `SELECT` ON `db`.* FROM `reader`;
+REVOKE ON CLUSTER `production` GRANT OPTION FOR SELECT ON `db`.* FROM `reader`;

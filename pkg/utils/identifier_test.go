@@ -292,7 +292,7 @@ func TestIsClusterMacro(t *testing.T) {
 		{"`default`", false},
 		// Edge cases
 		{"", false},
-		{"'", false},  // not a valid single-quoted string (no closing quote)
+		{"'", false}, // not a valid single-quoted string (no closing quote)
 	}
 
 	for _, tc := range cases {
@@ -320,10 +320,10 @@ func TestIsClickHouseMacro(t *testing.T) {
 		{"my-cluster", false},
 		{"`default`", false},
 		// Malformed macro patterns
-		{"'{}'", false},           // empty identifier
-		{"'{123bad}'", false},     // identifier starts with digit
-		{"'{cluster'", false},     // missing closing brace
-		{"'{cluster}x'", false},   // trailing content after brace
+		{"'{}'", false},         // empty identifier
+		{"'{123bad}'", false},   // identifier starts with digit
+		{"'{cluster'", false},   // missing closing brace
+		{"'{cluster}x'", false}, // trailing content after brace
 		// Edge cases
 		{"", false},
 		{"'", false},

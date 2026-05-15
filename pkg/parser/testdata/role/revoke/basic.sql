@@ -1,1 +1,1 @@
-REVOKE `admin` FROM `john`;
+REVOKE ADMIN FROM `john`;

@@ -1,1 +1,1 @@
-GRANT `SELECT` ON *.* TO `reader`;
+GRANT SELECT ON *.* TO `reader`;
