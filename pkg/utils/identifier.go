@@ -106,3 +106,39 @@ func StripBackticks(s string) string {
 	// Remove all backticks
 	return strings.ReplaceAll(s, "`", "")
 }
+
+// IsClusterMacro reports whether s is a single-quoted ClickHouse
+// macro reference like '{cluster}'. The check is intentionally
+// lenient — any value wrapped in single quotes is treated as a
+// macro pass-through.
+//
+// Examples:
+//
+//	IsClusterMacro("'{cluster}'") → true
+//	IsClusterMacro("'{shard}'")   → true
+//	IsClusterMacro("production")  → false
+//	IsClusterMacro("")            → false
+func IsClusterMacro(s string) bool {
+	return len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\''
+}
+
+// FormatClusterName formats a cluster name for ON CLUSTER clauses.
+// Macro references (e.g. "'{cluster}'") are returned verbatim so
+// the single quotes survive the round-trip. Plain identifiers are
+// backtick-quoted for safety.
+//
+// Examples:
+//
+//	FormatClusterName("'{cluster}'") → "'{cluster}'"
+//	FormatClusterName("production")  → "`production`"
+//	FormatClusterName("")            → ""
+func FormatClusterName(name string) string {
+	switch {
+	case name == "":
+		return ""
+	case IsClusterMacro(name):
+		return name
+	default:
+		return BacktickIdentifier(name)
+	}
+}

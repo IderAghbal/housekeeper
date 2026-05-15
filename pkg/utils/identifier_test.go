@@ -274,3 +274,42 @@ func TestStripBackticks(t *testing.T) {
 func stringPtr(s string) *string {
 	return &s
 }
+
+func TestIsClusterMacro(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{name: "cluster macro", input: "'{cluster}'", expected: true},
+		{name: "shard macro", input: "'{shard}'", expected: true},
+		{name: "plain identifier", input: "production", expected: false},
+		{name: "empty string", input: "", expected: false},
+		{name: "single quote only", input: "'", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, utils.IsClusterMacro(tt.input))
+		})
+	}
+}
+
+func TestFormatClusterName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "cluster macro passthrough", input: "'{cluster}'", expected: "'{cluster}'"},
+		{name: "plain identifier backticked", input: "production", expected: "`production`"},
+		{name: "empty string", input: "", expected: ""},
+		{name: "name with dash backticked", input: "prod-cluster", expected: "`prod-cluster`"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, utils.FormatClusterName(tt.input))
+		})
+	}
+}

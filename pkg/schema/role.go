@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/pseudomuto/housekeeper/pkg/parser"
+	"github.com/pseudomuto/housekeeper/pkg/utils"
 )
 
 const (
@@ -382,7 +383,7 @@ func generateCreateRoleSQL(role *RoleInfo) string {
 	parts = append(parts, "CREATE ROLE IF NOT EXISTS", fmt.Sprintf("`%s`", role.Name))
 
 	if role.Cluster != "" {
-		parts = append(parts, "ON CLUSTER", fmt.Sprintf("`%s`", role.Cluster))
+		parts = append(parts, "ON CLUSTER", utils.FormatClusterName(role.Cluster))
 	}
 
 	if len(role.Settings) > 0 {
@@ -397,7 +398,7 @@ func generateDropRoleSQL(role *RoleInfo) string {
 	parts = append(parts, "DROP ROLE IF EXISTS", fmt.Sprintf("`%s`", role.Name))
 
 	if role.Cluster != "" {
-		parts = append(parts, "ON CLUSTER", fmt.Sprintf("`%s`", role.Cluster))
+		parts = append(parts, "ON CLUSTER", utils.FormatClusterName(role.Cluster))
 	}
 
 	return strings.Join(parts, " ") + ";"
@@ -408,7 +409,7 @@ func generateAlterRoleSQL(current, target *RoleInfo) string {
 	parts = append(parts, "ALTER ROLE", fmt.Sprintf("`%s`", current.Name))
 
 	if current.Cluster != "" {
-		parts = append(parts, "ON CLUSTER", fmt.Sprintf("`%s`", current.Cluster))
+		parts = append(parts, "ON CLUSTER", utils.FormatClusterName(current.Cluster))
 	}
 
 	if len(target.Settings) > 0 {
@@ -423,7 +424,7 @@ func generateRenameRoleSQL(role *RoleInfo, newName string) string {
 	parts = append(parts, "ALTER ROLE", fmt.Sprintf("`%s`", role.Name))
 
 	if role.Cluster != "" {
-		parts = append(parts, "ON CLUSTER", fmt.Sprintf("`%s`", role.Cluster))
+		parts = append(parts, "ON CLUSTER", utils.FormatClusterName(role.Cluster))
 	}
 
 	parts = append(parts, "RENAME TO", fmt.Sprintf("`%s`", newName))
@@ -431,13 +432,18 @@ func generateRenameRoleSQL(role *RoleInfo, newName string) string {
 	return strings.Join(parts, " ") + ";"
 }
 
+// generateGrantSQL emits GRANT statements with ON CLUSTER positioned
+// immediately after GRANT (the ClickHouse spec order), matching the
+// parser grammar.
 func generateGrantSQL(grant *GrantInfo) string {
 	var parts []string
-	parts = append(parts, "GRANT", strings.Join(grant.Privileges, ", "))
+	parts = append(parts, "GRANT")
 
 	if grant.Cluster != "" {
-		parts = append(parts, "ON CLUSTER", fmt.Sprintf("`%s`", grant.Cluster))
+		parts = append(parts, "ON CLUSTER", utils.FormatClusterName(grant.Cluster))
 	}
+
+	parts = append(parts, strings.Join(grant.Privileges, ", "))
 
 	if grant.OnTarget != "" {
 		parts = append(parts, "ON", grant.OnTarget)
@@ -455,13 +461,18 @@ func generateGrantSQL(grant *GrantInfo) string {
 	return strings.Join(parts, " ") + ";"
 }
 
+// generateRevokeSQL emits REVOKE statements with ON CLUSTER positioned
+// immediately after REVOKE (the ClickHouse spec order), matching the
+// parser grammar.
 func generateRevokeSQL(grant *GrantInfo) string {
 	var parts []string
-	parts = append(parts, "REVOKE", strings.Join(grant.Privileges, ", "))
+	parts = append(parts, "REVOKE")
 
 	if grant.Cluster != "" {
-		parts = append(parts, "ON CLUSTER", fmt.Sprintf("`%s`", grant.Cluster))
+		parts = append(parts, "ON CLUSTER", utils.FormatClusterName(grant.Cluster))
 	}
+
+	parts = append(parts, strings.Join(grant.Privileges, ", "))
 
 	if grant.OnTarget != "" {
 		parts = append(parts, "ON", grant.OnTarget)

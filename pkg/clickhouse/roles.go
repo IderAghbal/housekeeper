@@ -7,6 +7,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/pseudomuto/housekeeper/pkg/parser"
+	"github.com/pseudomuto/housekeeper/pkg/utils"
 )
 
 // tableNotFoundPatterns contains error patterns that indicate a table doesn't exist.
@@ -51,9 +52,11 @@ func (c *Client) GetRoles(ctx context.Context) (*parser.SQL, error) {
 		// Build CREATE ROLE statement
 		stmt := fmt.Sprintf("CREATE ROLE IF NOT EXISTS `%s`", name)
 
-		// Add ON CLUSTER if configured
+		// Add ON CLUSTER if configured. Cluster names that look
+		// like macros ('{cluster}') flow through verbatim via
+		// FormatClusterName; plain identifiers get backtick-wrapped.
 		if c.options.Cluster != "" {
-			stmt = fmt.Sprintf("%s ON CLUSTER `%s`", stmt, c.options.Cluster)
+			stmt = fmt.Sprintf("%s ON CLUSTER %s", stmt, utils.FormatClusterName(c.options.Cluster))
 		}
 
 		// Get role settings
@@ -221,15 +224,19 @@ func (c *Client) getRoleGrants(ctx context.Context) ([]string, error) { // nolin
 		grants[key] = true
 	}
 
-	// Convert grants map to statements
+	// Convert grants map to statements. Per ClickHouse spec, ON
+	// CLUSTER appears immediately after GRANT (before privileges),
+	// and the cluster name is emitted via FormatClusterName so
+	// macro references like '{cluster}' survive verbatim.
 	statements := make([]string, 0, len(grants))
 	for key := range grants {
-		stmt := "GRANT " + key.privilege
+		stmt := "GRANT"
 
-		// Add ON CLUSTER if configured
 		if c.options.Cluster != "" {
-			stmt = fmt.Sprintf("%s ON CLUSTER `%s`", stmt, c.options.Cluster)
+			stmt = fmt.Sprintf("%s ON CLUSTER %s", stmt, utils.FormatClusterName(c.options.Cluster))
 		}
+
+		stmt = fmt.Sprintf("%s %s", stmt, key.privilege)
 
 		if key.target != "" {
 			stmt = fmt.Sprintf("%s ON %s", stmt, key.target)

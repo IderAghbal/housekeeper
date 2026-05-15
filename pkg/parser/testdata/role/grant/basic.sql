@@ -1,1 +1,1 @@
-GRANT `admin` TO `john`;
+GRANT ADMIN TO `john`;

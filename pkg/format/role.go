@@ -6,18 +6,14 @@ import (
 	"strings"
 
 	"github.com/pseudomuto/housekeeper/pkg/parser"
+	"github.com/pseudomuto/housekeeper/pkg/utils"
 )
 
 // clusterName formats a cluster name for ON CLUSTER clauses.
-// ClickHouse accepts a bare identifier, a back-ticked identifier, or
-// a quoted string. The parser strips backticks but preserves quoted
-// strings, so a leading single-quote signals a macro reference like
-// '{cluster}' that must be emitted as-is.
+// Macro references (e.g. '{cluster}') flow through verbatim; plain
+// identifiers are backtick-quoted.
 func (f *Formatter) clusterName(name string) string {
-	if len(name) > 0 && name[0] == '\'' {
-		return name
-	}
-	return f.identifier(name)
+	return utils.FormatClusterName(name)
 }
 
 // createRole formats a CREATE ROLE statement
@@ -269,7 +265,12 @@ func (f *Formatter) formatRoleList(list *parser.RoleList) string {
 	return strings.Join(names, ", ")
 }
 
-// formatPrivilegeList formats a list of privileges
+// formatPrivilegeList formats a list of privileges. Privilege names
+// (SELECT, INSERT, ...) are emitted as bare keywords — backticking
+// them would turn them into identifiers and ClickHouse would reject
+// `GRANT \`SELECT\` ON ...` as a malformed role grant. Column
+// references inside privilege(col, ...) ARE identifiers and stay
+// backtick-quoted.
 func (f *Formatter) formatPrivilegeList(list *parser.PrivilegeList) string {
 	if list == nil || len(list.Items) == 0 {
 		return ""
@@ -284,9 +285,9 @@ func (f *Formatter) formatPrivilegeList(list *parser.PrivilegeList) string {
 			for j, col := range item.Columns {
 				cols[j] = f.identifier(col)
 			}
-			items[i] = fmt.Sprintf("%s(%s)", f.identifier(item.Name), strings.Join(cols, ", "))
+			items[i] = fmt.Sprintf("%s(%s)", f.keyword(item.Name), strings.Join(cols, ", "))
 		} else {
-			items[i] = f.identifier(item.Name)
+			items[i] = f.keyword(item.Name)
 		}
 	}
 	return strings.Join(items, ", ")

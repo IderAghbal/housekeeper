@@ -1,1 +1,1 @@
-GRANT ON CLUSTER '{cluster}' `INSERT` ON `forjeron`.`events` TO `writer`;
+GRANT ON CLUSTER '{cluster}' INSERT ON `forjeron`.`events` TO `writer`;
