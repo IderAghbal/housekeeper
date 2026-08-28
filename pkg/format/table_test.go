@@ -191,3 +191,51 @@ func TestFormatter_alterTable(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatter_createTableIndexTypes guards the round trip a live-schema dump
+// depends on: housekeeper reads SHOW CREATE TABLE, reformats it, and reparses
+// the result. An index whose TYPE is dropped on the way out produces
+// `TYPE  GRANULARITY 4`, which the parser then rejects, so the whole
+// get-schema step fails and every diff, plan and apply against that cluster
+// fails with it. The CREATE TABLE grammar keeps the type in a typed
+// alternation rather than in the `Type` field, which holds only the matched
+// TYPE keyword, and reading the wrong one is what made an emitted index
+// unreadable.
+func TestFormatter_createTableIndexTypes(t *testing.T) {
+	tests := []struct {
+		name  string
+		index string
+	}{
+		{"bloom filter", "INDEX `idx` `col` TYPE bloom_filter GRANULARITY 4"},
+		{"minmax", "INDEX `idx` `col` TYPE minmax GRANULARITY 1"},
+		{"hypothesis", "INDEX `idx` `col` TYPE hypothesis GRANULARITY 1"},
+		{"set", "INDEX `idx` `col` TYPE set(100) GRANULARITY 2"},
+		{"tokenbf_v1", "INDEX `idx` `col` TYPE tokenbf_v1(256, 2, 0) GRANULARITY 1"},
+		{"ngrambf_v1", "INDEX `idx` `col` TYPE ngrambf_v1(3, 256, 2, 0) GRANULARITY 1"},
+		{"unknown type falls back to its identifier", "INDEX `idx` `col` TYPE some_future_type GRANULARITY 1"},
+		{"no granularity", "INDEX `idx` `col` TYPE minmax"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql := "CREATE TABLE t (col String, " + strings.ReplaceAll(tt.index, "`", "") +
+				") ENGINE = MergeTree() ORDER BY col;"
+
+			sqlResult, err := parser.ParseString(sql)
+			require.NoError(t, err)
+
+			var buf bytes.Buffer
+			require.NoError(t, Format(&buf, Defaults, sqlResult.Statements[0]))
+			formatted := buf.String()
+
+			require.Contains(t, formatted, tt.index,
+				"the index must round trip with its type intact")
+
+			// AND THE OUTPUT MUST PARSE. Contains alone would pass on a
+			// rendering that is merely close: this is the step that actually
+			// fails in production when the type goes missing.
+			_, err = parser.ParseString(formatted)
+			require.NoError(t, err, "housekeeper must be able to reparse what it formatted")
+		})
+	}
+}

@@ -471,13 +471,49 @@ func (f *Formatter) formatIndexDefinition(idx *parser.IndexDefinition) string {
 	parts = append(parts, f.keyword("INDEX"))
 	parts = append(parts, f.identifier(idx.Name))
 	parts = append(parts, f.formatExpression(&idx.Expression))
-	parts = append(parts, f.keyword("TYPE"), idx.Type)
+	// idx.Type holds the matched TYPE keyword and nothing else, because the
+	// CREATE TABLE grammar spells the type as a separate alternation. Reading
+	// it here emitted `TYPE  GRANULARITY n`, which this package's own parser
+	// then rejects, so a live schema carrying any skip index could not be
+	// dumped at all.
+	parts = append(parts, f.keyword("TYPE"), formatIndexType(&idx.IndexType))
 
 	if idx.Granularity != nil {
 		parts = append(parts, f.keyword("GRANULARITY"), *idx.Granularity)
 	}
 
 	return strings.Join(parts, " ")
+}
+
+// formatIndexType renders an index type back to the spelling ClickHouse
+// accepts. Bare for the keyword types and for an unrecognised one, which the
+// grammar keeps verbatim so a type this version has not been taught still
+// survives a round trip; parenthesised for the parametric ones.
+func formatIndexType(t *parser.IndexType) string {
+	if t == nil {
+		return ""
+	}
+	switch {
+	case t.BloomFilter:
+		return "bloom_filter"
+	case t.MinMax:
+		return "minmax"
+	case t.Hypothesis:
+		return "hypothesis"
+	case t.Set != nil:
+		return "set(" + t.Set.MaxRows + ")"
+	case t.TokenBF != nil:
+		return "tokenbf_v1(" + strings.Join([]string{
+			t.TokenBF.Size, t.TokenBF.Hashes, t.TokenBF.Seed,
+		}, ", ") + ")"
+	case t.NGramBF != nil:
+		return "ngrambf_v1(" + strings.Join([]string{
+			t.NGramBF.N, t.NGramBF.Size, t.NGramBF.Hashes, t.NGramBF.Seed,
+		}, ", ") + ")"
+	case t.Custom != nil:
+		return *t.Custom
+	}
+	return ""
 }
 
 // formatConstraintDefinition formats a constraint definition
