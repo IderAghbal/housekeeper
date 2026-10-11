@@ -476,7 +476,7 @@ func (f *Formatter) formatIndexDefinition(idx *parser.IndexDefinition) string {
 	// it here emitted `TYPE  GRANULARITY n`, which this package's own parser
 	// then rejects, so a live schema carrying any skip index could not be
 	// dumped at all.
-	parts = append(parts, f.keyword("TYPE"), formatIndexType(&idx.IndexType))
+	parts = append(parts, f.keyword("TYPE"), f.formatIndexType(&idx.IndexType))
 
 	if idx.Granularity != nil {
 		parts = append(parts, f.keyword("GRANULARITY"), *idx.Granularity)
@@ -489,7 +489,7 @@ func (f *Formatter) formatIndexDefinition(idx *parser.IndexDefinition) string {
 // accepts. Bare for the keyword types and for an unrecognised one, which the
 // grammar keeps verbatim so a type this version has not been taught still
 // survives a round trip; parenthesised for the parametric ones.
-func formatIndexType(t *parser.IndexType) string {
+func (f *Formatter) formatIndexType(t *parser.IndexType) string {
 	if t == nil {
 		return ""
 	}
@@ -510,6 +510,12 @@ func formatIndexType(t *parser.IndexType) string {
 		return "ngrambf_v1(" + strings.Join([]string{
 			t.NGramBF.N, t.NGramBF.Size, t.NGramBF.Hashes, t.NGramBF.Seed,
 		}, ", ") + ")"
+	case t.Text != nil:
+		args := make([]string, len(t.Text.Arguments))
+		for i := range t.Text.Arguments {
+			args[i] = f.formatExpression(&t.Text.Arguments[i])
+		}
+		return "text(" + strings.Join(args, ", ") + ")"
 	case t.Custom != nil:
 		return *t.Custom
 	}

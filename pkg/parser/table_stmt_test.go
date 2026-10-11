@@ -81,6 +81,15 @@ func TestCreateTable(t *testing.T) {
 			INDEX category_set category TYPE set(1000) GRANULARITY 1
 		) ENGINE = MergeTree() ORDER BY (timestamp, user_id) PARTITION BY toYYYYMM(timestamp);`},
 
+		// The full-text index, whose arguments are named
+		{name: "with_text_index", sql: `CREATE TABLE files (
+			id UInt64,
+			search_text String,
+			path String,
+			INDEX search_text_index search_text TYPE text(tokenizer = splitByNonAlpha) GRANULARITY 100000000,
+			INDEX path_index path TYPE text(tokenizer = splitByString(['/', '.']), dictionary_block_size = 512) GRANULARITY 1
+		) ENGINE = MergeTree() ORDER BY id;`},
+
 		// Constraints
 		{name: "with_constraints", sql: `CREATE TABLE user_profiles (
 			user_id UInt64,

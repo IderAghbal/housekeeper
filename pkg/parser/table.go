@@ -142,6 +142,7 @@ type (
 		Set     *IndexSetType     `parser:"| @@"`
 		TokenBF *IndexTokenBFType `parser:"| @@"`
 		NGramBF *IndexNGramBFType `parser:"| @@"`
+		Text    *IndexTextType    `parser:"| @@"`
 
 		// Custom/future index types - fallback to string
 		Custom *string `parser:"| @(Ident | BacktickIdent)"`
@@ -176,6 +177,19 @@ type (
 		Comma3  string `parser:"','"`
 		Seed    string `parser:"@Number"`
 		Close   string `parser:"')'"`
+	}
+
+	// IndexTextType represents the full-text index, text(name = value, ...).
+	// ClickHouse requires its tokenizer and takes further options by name,
+	// each value an expression (splitByNonAlpha, ngrams(3),
+	// splitByString([', ']), a number), and SHOW CREATE TABLE prints them as
+	// given. Each argument is kept as the expression `name = value` it
+	// parses as, so an option this version has not been taught still
+	// survives a round trip.
+	IndexTextType struct {
+		Text      string       `parser:"'text' '('"`
+		Arguments []Expression `parser:"(@@ (',' @@)*)?"`
+		Close     string       `parser:"')'"`
 	}
 
 	// ConstraintDefinition represents a CONSTRAINT definition within CREATE TABLE

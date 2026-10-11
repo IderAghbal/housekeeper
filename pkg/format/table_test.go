@@ -212,6 +212,11 @@ func TestFormatter_createTableIndexTypes(t *testing.T) {
 		{"set", "INDEX `idx` `col` TYPE set(100) GRANULARITY 2"},
 		{"tokenbf_v1", "INDEX `idx` `col` TYPE tokenbf_v1(256, 2, 0) GRANULARITY 1"},
 		{"ngrambf_v1", "INDEX `idx` `col` TYPE ngrambf_v1(3, 256, 2, 0) GRANULARITY 1"},
+		// ClickHouse prints a text index's arguments bare and reads them
+		// back quoted, so the formatter's quoting is a spelling it accepts.
+		{"text", "INDEX `idx` `col` TYPE text(`tokenizer` = `splitByNonAlpha`) GRANULARITY 100000000"},
+		{"text with a parametric tokenizer", "INDEX `idx` `col` TYPE text(`tokenizer` = ngrams(3)) GRANULARITY 1"},
+		{"text with an array tokenizer and options", "INDEX `idx` `col` TYPE text(`tokenizer` = splitByString([', ', ';']), `dictionary_block_size` = 512) GRANULARITY 1"},
 		{"unknown type falls back to its identifier", "INDEX `idx` `col` TYPE some_future_type GRANULARITY 1"},
 		{"no granularity", "INDEX `idx` `col` TYPE minmax"},
 	}
