@@ -214,6 +214,12 @@ func FormatSQL(w io.Writer, opts FormatterOptions, sql *parser.SQL) error {
 	return Format(w, opts, sql.Statements...)
 }
 
+// FormatTableElement renders one element of a CREATE TABLE's body, a column,
+// an index, a constraint or a projection, as the formatter writes it there.
+func FormatTableElement(element *parser.TableElement) string {
+	return New(Defaults).formatTableElement(element, 0)
+}
+
 // FormatTTLClause formats a TableTTLClause to a string suitable for use in
 // ALTER TABLE statements. Returns the comma-separated list of TTL entries
 // (each `expression [action]`) without the leading "TTL" keyword.

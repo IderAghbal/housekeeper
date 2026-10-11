@@ -244,3 +244,24 @@ func TestFormatter_createTableIndexTypes(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatter_createTableProjection guards a projection declared in a
+// CREATE TABLE's body, which the formatter dropped: it must come out with
+// its query, and what comes out must parse again.
+func TestFormatter_createTableProjection(t *testing.T) {
+	sql := "CREATE TABLE files (id UInt64, owner_id UInt64, PROJECTION by_owner (SELECT owner_id, count() GROUP BY owner_id)) ENGINE = MergeTree() ORDER BY id;"
+	parsed, err := parser.ParseString(sql)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, Format(&buf, Defaults, parsed.Statements[0]))
+	formatted := buf.String()
+	require.Contains(t, formatted, "PROJECTION `by_owner` (SELECT")
+	require.Contains(t, formatted, "GROUP BY `owner_id`)")
+
+	reparsed, err := parser.ParseString(formatted)
+	require.NoError(t, err, "housekeeper must be able to reparse what it formatted")
+	var again bytes.Buffer
+	require.NoError(t, Format(&again, Defaults, reparsed.Statements[0]))
+	require.Equal(t, formatted, again.String(), "a formatted projection formats the same again")
+}

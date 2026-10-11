@@ -124,7 +124,16 @@ func (f *Formatter) formatTableElement(element *parser.TableElement, maxWidth in
 	if element.Constraint != nil {
 		return f.formatConstraintDefinition(element.Constraint)
 	}
+	if element.Projection != nil {
+		return f.formatProjectionDefinition(element.Projection)
+	}
 	return ""
+}
+
+// formatProjectionDefinition formats a projection declared in a CREATE
+// TABLE's body, which was dropped there before.
+func (f *Formatter) formatProjectionDefinition(p *parser.ProjectionDefinition) string {
+	return f.keyword("PROJECTION") + " " + f.identifier(p.Name) + " (" + f.formatSelectStatement(&p.SelectClause.SelectStmt) + ")"
 }
 
 // writePreEngineComments writes lines and pre-engine comments to writer

@@ -61,6 +61,10 @@ type (
 		IfNotExists   bool                   // Whether IF NOT EXISTS was used
 		AsSourceTable *string                // If this table uses AS, the source table name (qualified)
 		AsDependents  map[string]bool        // Tables that use AS to reference this table
+		// Elements are the table's indexes, constraints and projections, in
+		// the order declared, which a CREATE TABLE writes after its columns.
+		// The differ compares none of them: a live table's are left to it.
+		Elements []parser.TableElement
 	}
 
 	// ColumnInfo represents a single column definition
@@ -897,7 +901,8 @@ func extractTablesFromSQL(sql *parser.SQL) (map[string]*TableInfo, error) {
 			var columns []ColumnInfo
 			for _, element := range table.Elements {
 				if element.Column == nil {
-					continue // Skip indexes and constraints for now
+					tableInfo.Elements = append(tableInfo.Elements, element)
+					continue
 				}
 				col := element.Column
 				columnInfo := ColumnInfo{
@@ -1529,6 +1534,13 @@ func writeTableColumns(sql *strings.Builder, table *TableInfo) {
 		}
 		sql.WriteString("    ")
 		sql.WriteString(formatColumnDefinition(col))
+	}
+	// The table's indexes, constraints and projections follow its columns,
+	// so a table this creates has them from its first part. Dropping them
+	// here left every created table without its indexes.
+	for i := range table.Elements {
+		sql.WriteString(",\n    ")
+		sql.WriteString(format.FormatTableElement(&table.Elements[i]))
 	}
 	sql.WriteString("\n)")
 }
