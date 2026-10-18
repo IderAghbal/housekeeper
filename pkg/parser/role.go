@@ -140,13 +140,13 @@ type (
 		Items []*PrivilegeItem `parser:"@@ (',' @@)*"`
 	}
 
-	// PrivilegeItem represents a single privilege or role
+	// PrivilegeItem represents a single privilege or role. A privilege may
+	// take several words (ALTER UPDATE, SYSTEM FLUSH LOGS); its words run to
+	// the ON, TO or FROM after it, and ClickHouse validates the name.
 	PrivilegeItem struct {
-		// This is simplified - in reality, privileges can be complex expressions
-		// We'll parse them as identifiers and let ClickHouse validate
-		All     bool     `parser:"@'ALL'"`
-		Name    string   `parser:"| @(Ident | BacktickIdent)"`
-		Columns []string `parser:"('(' @(Ident | BacktickIdent) (',' @(Ident | BacktickIdent))* ')')?"`
+		All     bool          `parser:"@'ALL'"`
+		Name    PrivilegeName `parser:"| @(Ident | BacktickIdent) ((?! 'ON' | 'TO' | 'FROM') @Ident)*"`
+		Columns []string      `parser:"('(' @(Ident | BacktickIdent) (',' @(Ident | BacktickIdent))* ')')?"`
 	}
 
 	// GrantTarget represents the target of a GRANT/REVOKE (database.table or *.*)
@@ -168,6 +168,20 @@ type (
 		IsCurrent bool   `parser:"| @'CURRENT_USER'"`
 	}
 )
+
+// PrivilegeName is a privilege or role name, its words joined by one space.
+type PrivilegeName string
+
+// Capture joins each captured word to the name.
+func (n *PrivilegeName) Capture(values []string) error {
+	for _, v := range values {
+		if *n != "" {
+			*n += " "
+		}
+		*n += PrivilegeName(v)
+	}
+	return nil
+}
 
 // OnCluster returns the effective ON CLUSTER target regardless of
 // whether it was parsed in the leading or trailing position. nil

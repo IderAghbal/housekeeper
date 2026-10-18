@@ -69,6 +69,16 @@ func TestGrantRole(t *testing.T) {
 		// normalizes it to the leading position.
 		{name: "on_cluster_trail_ident", sql: `GRANT SELECT ON analytics.* TO reader ON CLUSTER production;`},
 		{name: "on_cluster_trail_macro", sql: `GRANT INSERT ON forjeron.events TO writer ON CLUSTER '{cluster}';`},
+		// A privilege ClickHouse names in more than one word.
+		{name: "alter_update", sql: `GRANT ON CLUSTER '{cluster}' ALTER UPDATE ON drive.files TO sweeper;`},
+		{name: "alter_delete", sql: `GRANT ALTER DELETE ON drive.versions TO sweeper;`},
+		{name: "alter_column", sql: `GRANT ALTER COLUMN ON drive.* TO migrator;`},
+		{name: "alter_update_columns", sql: `GRANT ALTER UPDATE(state, owner) ON drive.files TO sweeper;`},
+		{name: "system_flush_logs", sql: `GRANT SYSTEM FLUSH LOGS ON *.* TO operator;`},
+		{name: "create_temporary_table", sql: `GRANT CREATE TEMPORARY TABLE ON *.* TO analyst;`},
+		{name: "compound_list", sql: `GRANT SELECT, ALTER UPDATE, ALTER DELETE, SYSTEM SYNC REPLICA ON drive.files TO sweeper;`},
+		{name: "compound_lowercase", sql: `grant alter update on drive.files to sweeper;`},
+		{name: "compound_trail_cluster", sql: `GRANT ALTER MODIFY COLUMN ON drive.files TO migrator ON CLUSTER '{cluster}';`},
 	}
 
 	runStatementTests(t, "role/grant", tests)
@@ -83,6 +93,8 @@ func TestRevokeRole(t *testing.T) {
 		{name: "on_cluster_lead", sql: `REVOKE ON CLUSTER staging INSERT ON db.tbl FROM writer;`},
 		{name: "on_cluster_lead_grant_option_for", sql: `REVOKE ON CLUSTER production GRANT OPTION FOR SELECT ON db.* FROM reader;`},
 		{name: "on_cluster_trail", sql: `REVOKE INSERT ON db.tbl FROM writer ON CLUSTER staging;`},
+		{name: "compound", sql: `REVOKE ON CLUSTER staging ALTER UPDATE, ALTER DELETE ON drive.files FROM sweeper;`},
+		{name: "compound_grant_option_for", sql: `REVOKE GRANT OPTION FOR SYSTEM FLUSH LOGS ON *.* FROM operator;`},
 	}
 
 	runStatementTests(t, "role/revoke", tests)

@@ -286,7 +286,7 @@ func extractPrivileges(list *parser.PrivilegeList) []string {
 		if len(item.Columns) > 0 {
 			privs = append(privs, fmt.Sprintf("%s(%s)", item.Name, strings.Join(item.Columns, ", ")))
 		} else {
-			privs = append(privs, item.Name)
+			privs = append(privs, string(item.Name))
 		}
 	}
 	return privs

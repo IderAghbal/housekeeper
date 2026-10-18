@@ -277,9 +277,9 @@ func (f *Formatter) formatPrivilegeList(list *parser.PrivilegeList) string {
 			for j, col := range item.Columns {
 				cols[j] = f.identifier(col)
 			}
-			items[i] = fmt.Sprintf("%s(%s)", f.keyword(item.Name), strings.Join(cols, ", "))
+			items[i] = fmt.Sprintf("%s(%s)", f.keyword(string(item.Name)), strings.Join(cols, ", "))
 		} else {
-			items[i] = f.keyword(item.Name)
+			items[i] = f.keyword(string(item.Name))
 		}
 	}
 	return strings.Join(items, ", ")

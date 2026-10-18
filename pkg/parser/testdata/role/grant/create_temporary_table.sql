@@ -1,0 +1,1 @@
+GRANT CREATE TEMPORARY TABLE ON *.* TO `analyst`;

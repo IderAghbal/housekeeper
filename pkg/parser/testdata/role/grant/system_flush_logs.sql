@@ -1,0 +1,1 @@
+GRANT SYSTEM FLUSH LOGS ON *.* TO `operator`;
