@@ -311,3 +311,42 @@ func showDiff(t *testing.T, actual, expected, actualLabel, expectedLabel string)
 		t.Logf("... (showing first %d differences)", maxDiffShow)
 	}
 }
+
+// A view's column list, and a materialized view's inner engine, go from the
+// dump: system.tables writes them, and a declaration does not.
+func TestCleanViewStatement_ColumnsAfterTheName(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "materialized view with an inner engine",
+			in: "CREATE MATERIALIZED VIEW analytics.mv_hourly_stats (`hour` DateTime, `event_type` LowCardinality(String), `event_count` UInt64) " +
+				"ENGINE = ReplicatedSummingMergeTree('/clickhouse/tables/{shard}/analytics/mv_hourly_stats', '{replica}') PARTITION BY toYYYYMM(hour) " +
+				"ORDER BY (hour, event_type) SETTINGS index_granularity = 8192 AS SELECT toStartOfHour(timestamp) AS hour, event_type, count() AS event_count FROM analytics.events GROUP BY hour, event_type",
+			want: "CREATE MATERIALIZED VIEW analytics.mv_hourly_stats AS SELECT toStartOfHour(timestamp) AS hour, event_type, count() AS event_count FROM analytics.events GROUP BY hour, event_type;",
+		},
+		{
+			name: "a quoted paren in a column's type",
+			in:   "CREATE MATERIALIZED VIEW db.mv ON CLUSTER c (`state` Enum8('open (new)' = 1, 'closed' = 2)) ENGINE = MergeTree ORDER BY tuple() AS SELECT state FROM db.t",
+			want: "CREATE MATERIALIZED VIEW db.mv ON CLUSTER c AS SELECT state FROM db.t;",
+		},
+		{
+			name: "plain view",
+			in:   "CREATE VIEW db.v (`a` UInt8, `b` String) AS SELECT a, b FROM db.t",
+			want: "CREATE VIEW db.v AS SELECT a, b FROM db.t;",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cleanViewStatement(tt.in)
+			if got != tt.want {
+				t.Errorf("cleanViewStatement() =\n%s\nwant\n%s", got, tt.want)
+			}
+			if _, err := parser.ParseString(got); err != nil {
+				t.Errorf("the cleaned statement does not parse: %v", err)
+			}
+		})
+	}
+}

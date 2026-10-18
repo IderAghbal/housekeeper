@@ -26,6 +26,8 @@ func cleanViewStatement(createQuery string) string {
 	definerPattern := regexp.MustCompile(`\s+DEFINER\s*=\s*\S+\s+SQL\s+SECURITY\s+DEFINER`)
 	cleaned = definerPattern.ReplaceAllString(cleaned, "")
 
+	cleaned = stripColumnsAfterName(cleaned)
+
 	// ClickHouse may return CREATE VIEW name (col1 Type1, ...) AS SELECT
 	// or CREATE MATERIALIZED VIEW name ... APPEND TO table_name (col1 Type1, ...) AS SELECT/WITH
 	// We need to remove the column definitions if they exist
@@ -63,6 +65,77 @@ func cleanViewStatement(createQuery string) string {
 	cleaned = normalizeCastTwoArgToAs(cleaned)
 
 	return strings.TrimSpace(cleaned)
+}
+
+// viewNamePattern matches a CREATE VIEW up to its name and ON CLUSTER when a
+// column list follows them, the way ClickHouse writes a materialized view with
+// an inner engine: CREATE MATERIALIZED VIEW db.mv (`a` T, ...) ENGINE = ...
+var viewNamePattern = regexp.MustCompile("(?is)^CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:MATERIALIZED\\s+)?VIEW\\s+" +
+	"(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:`[^`]*`|\\w+)(?:\\.(?:`[^`]*`|\\w+))?" +
+	"(?:\\s+ON\\s+CLUSTER\\s+(?:`[^`]*`|'[^']*'|\\w+))?\\s*\\(")
+
+var (
+	innerEnginePattern = regexp.MustCompile(`(?i)^ENGINE\s*=`)
+	mainSelectPattern  = regexp.MustCompile(`(?i)^AS\s+(SELECT|WITH)\b`)
+)
+
+// stripColumnsAfterName removes the column list right after a view's name and
+// the inner engine that follows it, up to the AS of the view's query. The
+// engine goes because system.tables writes it with settings a declaration
+// leaves out, an inner engine cannot be altered in place, and the differ
+// already tolerates a view whose engine one side does not carry. A paren or
+// keyword inside a quoted string or identifier, such as an Enum value's, is
+// not counted.
+func stripColumnsAfterName(s string) string {
+	m := viewNamePattern.FindStringIndex(s)
+	if m == nil {
+		return s
+	}
+	head := strings.TrimRight(s[:m[1]-1], " \t\n")
+	end := scanTopLevel(s, m[1]-1, func(i, depth int) bool { return depth == 0 && s[i] == ')' })
+	if end < 0 {
+		return s
+	}
+	rest := strings.TrimLeft(s[end+1:], " \t\n")
+	if innerEnginePattern.MatchString(rest) {
+		if as := scanTopLevel(rest, 0, func(i, depth int) bool {
+			return depth == 0 && (i == 0 || rest[i-1] == ' ' || rest[i-1] == '\n' || rest[i-1] == '\t') && mainSelectPattern.MatchString(rest[i:])
+		}); as >= 0 {
+			rest = rest[as:]
+		}
+	}
+	return head + " " + rest
+}
+
+// scanTopLevel walks s from start, keeping the paren depth outside quoted
+// strings and identifiers, and returns the first index at which stop holds
+// after that index's own paren is counted, or -1.
+func scanTopLevel(s string, start int, stop func(i, depth int) bool) int {
+	depth := 0
+	var quote byte
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		case c == '\'' || c == '`':
+			quote = c
+			continue
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		}
+		if stop(i, depth) {
+			return i
+		}
+	}
+	return -1
 }
 
 // normalizeCastTwoArgToAs converts ClickHouse's CAST(expr, 'Type') to CAST(expr AS Type)
