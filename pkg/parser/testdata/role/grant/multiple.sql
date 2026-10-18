@@ -1,1 +1,1 @@
-GRANT READER, WRITER TO `alice`, `bob`;
+GRANT `reader`, `writer` TO `alice`, `bob`;

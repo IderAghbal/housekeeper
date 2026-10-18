@@ -96,7 +96,7 @@ func TestGenerateImage(t *testing.T) {
 				{"db/schemas/_global/roles/admin_role.sql", "GRANT ALL ON `analytics`.*"},
 				{"db/schemas/_global/roles/admin_role.sql", "GRANT `readonly_role` TO `admin_role`"},
 				{"db/schemas/_global/roles/readonly_role.sql", "CREATE ROLE `readonly_role`"},
-				{"db/schemas/_global/roles/readonly_role.sql", "GRANT `SELECT` ON *.* TO `readonly_role`"},
+				{"db/schemas/_global/roles/readonly_role.sql", "GRANT SELECT ON *.* TO `readonly_role`"},
 				{"db/schemas/analytics/schema.sql", "CREATE DATABASE `analytics`"},
 				{"db/schemas/analytics/tables/users.sql", "CREATE TABLE `analytics`.`users`"},
 			},

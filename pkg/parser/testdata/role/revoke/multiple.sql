@@ -1,1 +1,1 @@
-REVOKE READER, WRITER FROM `alice`, `bob`;
+REVOKE `reader`, `writer` FROM `alice`, `bob`;

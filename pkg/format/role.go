@@ -165,7 +165,7 @@ func (f *Formatter) grant(w io.Writer, stmt *parser.GrantStmt) error {
 			parts = append(parts, f.keyword("ON CLUSTER"), f.clusterName(*cluster))
 		}
 
-		parts = append(parts, f.formatPrivilegeList(stmt.Privileges))
+		parts = append(parts, f.formatPrivilegeList(stmt.Privileges, stmt.On == nil))
 
 		if stmt.On != nil {
 			parts = append(parts, f.keyword("ON"), f.formatGrantTarget(stmt.On))
@@ -208,7 +208,7 @@ func (f *Formatter) revoke(w io.Writer, stmt *parser.RevokeStmt) error {
 			parts = append(parts, f.keyword("ADMIN OPTION FOR"))
 		}
 
-		parts = append(parts, f.formatPrivilegeList(stmt.Privileges))
+		parts = append(parts, f.formatPrivilegeList(stmt.Privileges, stmt.On == nil))
 
 		if stmt.On != nil {
 			parts = append(parts, f.keyword("ON"), f.formatGrantTarget(stmt.On))
@@ -262,8 +262,9 @@ func (f *Formatter) formatRoleList(list *parser.RoleList) string {
 // them would turn them into identifiers and ClickHouse would reject
 // `GRANT \`SELECT\` ON ...` as a malformed role grant. Column
 // references inside privilege(col, ...) ARE identifiers and stay
-// backtick-quoted.
-func (f *Formatter) formatPrivilegeList(list *parser.PrivilegeList) string {
+// backtick-quoted. A GRANT or REVOKE with no ON target names roles, not
+// privileges, and a role name is a case-sensitive identifier.
+func (f *Formatter) formatPrivilegeList(list *parser.PrivilegeList, roles bool) string {
 	if list == nil || len(list.Items) == 0 {
 		return ""
 	}
@@ -278,6 +279,8 @@ func (f *Formatter) formatPrivilegeList(list *parser.PrivilegeList) string {
 				cols[j] = f.identifier(col)
 			}
 			items[i] = fmt.Sprintf("%s(%s)", f.keyword(string(item.Name)), strings.Join(cols, ", "))
+		} else if roles {
+			items[i] = f.identifier(string(item.Name))
 		} else {
 			items[i] = f.keyword(string(item.Name))
 		}
